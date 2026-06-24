@@ -32,11 +32,16 @@ class Run:
     created_at: str
     parent: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None  # set when the experiment failed to run
 
     @property
     def score(self) -> float:
         """The objective metric for this run."""
         return float(self.metrics[self.objective])
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -75,6 +80,7 @@ class RunStore:
         env: dict[str, Any],
         parent: str | None = None,
         extra: dict[str, Any] | None = None,
+        error: str | None = None,
     ) -> Run:
         """Create, persist, and return a new run record."""
         run_id = f"{self._next_index():04d}"
@@ -90,6 +96,7 @@ class RunStore:
             created_at=_now_iso(),
             parent=parent,
             extra=extra or {},
+            error=error,
         )
         self._path(run_id).write_text(
             json.dumps(run.to_dict(), indent=2, sort_keys=True), encoding="utf-8"

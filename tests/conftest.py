@@ -35,6 +35,18 @@ class CountingTask(Task):
         return {"score": score, "b_used": float(config["b"])}
 
 
+class CrashTask(Task):
+    """A task whose run() always raises — for testing failure capture."""
+
+    name = "CrashTask"
+
+    def propose_space(self):
+        return {"x": (0.0, 1.0)}
+
+    def run(self, config, seed):
+        raise RuntimeError("boom")
+
+
 @pytest.fixture
 def counting_task():
     return CountingTask()

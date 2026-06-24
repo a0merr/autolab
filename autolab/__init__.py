@@ -8,12 +8,13 @@ interface for custom objectives.
 from __future__ import annotations
 
 from .agent import Agent, AnthropicAgent, RandomAgent
+from .executors import Executor, ProcessExecutor, Result, SerialExecutor
 from .lab import Lab
 from .replay import ReplayResult, replay
 from .store import Run, RunStore
 from .task import Task
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Lab",
@@ -21,6 +22,10 @@ __all__ = [
     "Agent",
     "RandomAgent",
     "AnthropicAgent",
+    "Executor",
+    "SerialExecutor",
+    "ProcessExecutor",
+    "Result",
     "Run",
     "RunStore",
     "replay",
