@@ -184,8 +184,7 @@ autolab/
 - [x] CLI: list / show / replay / report
 - [x] Analysis: cross-run comparison + search-tree visualization
 - [x] Swappable agent backends (`Agent` interface; `RandomAgent` + `AnthropicAgent` ship)
-- [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization
-- [ ] Example task: feature selection
+- [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization, feature selection
 - [ ] Parallel experiment execution
 ---
  
