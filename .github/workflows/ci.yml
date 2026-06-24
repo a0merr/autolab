@@ -35,3 +35,8 @@ jobs:
 
       - name: Smoke-test the quickstart
         run: python quickstart.py
+
+      - name: Smoke-test the demo script
+        run: python scripts/demo.py
+        env:
+          DEMO_FAST: "1"
