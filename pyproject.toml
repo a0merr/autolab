@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autolab"
+version = "0.1.0"
+description = "A framework for autonomous ML experimentation: an agent proposes hypotheses, runs experiments, and analyzes results with versioned, reproducible runs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Andrew Merritt", email = "a0merr05@louisville.edu" }]
+keywords = ["machine-learning", "experiment-tracking", "llm-agent", "hyperparameter-optimization", "autonomous-research"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.39.0"]
+dev = ["pytest>=7.0", "black>=24.0"]
+
+[project.urls]
+Homepage = "https://github.com/a0merr/autolab"
+Repository = "https://github.com/a0merr/autolab"
+
+[project.scripts]
+autolab = "autolab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["autolab*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
