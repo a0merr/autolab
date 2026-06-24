@@ -36,6 +36,23 @@ The agent isn't the hard part. The hard part is the plumbing that makes its expe
  
 ---
  
+## Why autolab
+
+There are great tools for parts of this loop. autolab's bet is that an **LLM agent reasoning over your run history** picks better next experiments than a fixed sweep — and that this is only trustworthy if every run is **versioned and replayable**. It pairs the two.
+
+| | Search strategy | Reproducibility | Extension surface |
+|---|---|---|---|
+| **autolab** | LLM agent reasons over run history (swappable; random fallback) | versioned run store, exact replay built in | one `Task` class (2 methods) |
+| Optuna / Hyperopt | samplers (TPE, random, CMA-ES) | study storage; replay is on you | objective function + distributions |
+| Ray Tune | schedulers + search algos, distributed | checkpoints; framework-coupled | trainable + config space |
+| Weights & Biases | sweeps (grid/random/bayes) + tracking | excellent logging; not an optimizer driver | agent + sweep YAML |
+
+When to reach for autolab: you want the *proposer itself* to be smart and pluggable, you care about auditing exactly why the search went where it did, and you want to point one small interface at anything — a model, a prompt, a pipeline, a feature subset. When a classic sampler or a managed dashboard already fits, use those; autolab is happy to wrap them behind the `Agent` or `Task` interface.
+
+> Honest status: autolab is young. The above is about *design intent and fit*, not feature parity with mature tools. Distributed execution and a sampler zoo are on the [roadmap](#roadmap), not in the box yet.
+
+---
+ 
 ## How it works
  
 ```
