@@ -1,9 +1,12 @@
 # Design: parallel experiment execution
 
-Status: **proposed** (not yet implemented). Target: v0.2.
+Status: **Phase 1 implemented** in v0.2.0. Phases 2–3 still open.
 
-The last open roadmap item. This note is the plan, the touch points, and the
-concurrency hazards — so the implementation is deliberate, not bolted on.
+This note is the original plan, the touch points, and the concurrency hazards.
+Phase 1 (the `Executor` seam, `SerialExecutor`/`ProcessExecutor`, batched
+rounds, `concurrency`, per-job error capture, determinism test) shipped as
+described. The `AnthropicAgent.propose_batch` diverse-batch call also landed
+early. Async fill-the-pool and per-worker env capture remain for later phases.
 
 ## The core tension
 

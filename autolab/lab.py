@@ -12,7 +12,7 @@ from typing import Any
 
 from . import analysis, env, space as space_mod
 from .agent import Agent, RandomAgent
-from .seeding import seed_everything
+from .executors import Executor, SerialExecutor
 from .store import DEFAULT_STORE_DIR, Run, RunStore
 from .task import Task
 
@@ -30,11 +30,15 @@ class Lab:
         agent: Agent | None = None,
         store: RunStore | str | Path | None = None,
         seed: int = 0,
+        concurrency: int = 1,
+        executor: Executor | None = None,
     ) -> None:
         if direction not in ("max", "min"):
             raise ValueError(f"direction must be 'max' or 'min', got {direction!r}")
         if budget < 1:
             raise ValueError(f"budget must be >= 1, got {budget}")
+        if concurrency < 1:
+            raise ValueError(f"concurrency must be >= 1, got {concurrency}")
 
         self.task = task
         self.objective = objective
@@ -42,6 +46,8 @@ class Lab:
         self.direction = direction
         self.agent = agent or RandomAgent(seed=seed)
         self.seed = seed
+        self.concurrency = concurrency
+        self.executor = executor or SerialExecutor()
 
         if isinstance(store, RunStore):
             self.store = store
@@ -54,50 +60,61 @@ class Lab:
     # -- the loop ----------------------------------------------------------
 
     def run(self) -> Run:
-        """Execute the search and return the best run found."""
-        env_snapshot = env.capture()
+        """Execute the search and return the best run found.
 
-        for i in range(self.budget):
+        Experiments run in rounds of up to ``concurrency`` jobs. Within a round
+        the agent proposes the whole batch from the current history; results are
+        written to the store in submission order, so the store is identical
+        regardless of how jobs are scheduled.
+        """
+        env_snapshot = env.capture()
+        task_name = self.task.qualified_name()
+
+        done = 0
+        while done < self.budget:
+            k = min(self.concurrency, self.budget - done)
             history = self.store.list(newest_first=False)
             parent = self._parent_for(history)
 
-            raw = self.agent.propose(
-                self._space, history, self.objective, self.direction
+            raw_batch = self.agent.propose_batch(
+                self._space, history, self.objective, self.direction, k
             )
-            config = space_mod.clip(raw, self._space)
+            configs = [space_mod.clip(raw, self._space) for raw in raw_batch]
+            jobs = [(cfg, self.seed + done + j) for j, cfg in enumerate(configs)]
 
-            seed = self.seed + i
-            seed_everything(seed)
-            metrics = self._run_one(config, seed)
+            results = self.executor.run_batch(task_name, jobs)
 
-            self.store.add(
-                task=self.task.qualified_name(),
-                objective=self.objective,
-                direction=self.direction,
-                config=config,
-                seed=seed,
-                metrics=metrics,
-                env=env_snapshot,
-                parent=parent,
-            )
+            for (config, seed), result in zip(jobs, results):
+                self._record(config, seed, result, env_snapshot, parent, task_name)
+            done += k
 
         best = self.best()
         if best is None:
-            raise RuntimeError("search produced no runs")
+            raise RuntimeError(
+                "search produced no successful runs (all experiments failed)"
+            )
         return best
 
-    def _run_one(self, config: dict[str, Any], seed: int) -> dict[str, float]:
-        metrics = self.task.run(config, seed)
-        if not isinstance(metrics, dict):
-            raise TypeError(
-                f"Task.run must return a dict of metrics, got {type(metrics).__name__}"
-            )
-        if self.objective not in metrics:
+    def _record(self, config, seed, result, env_snapshot, parent, task_name) -> None:
+        """Persist one job's outcome — metrics on success, an error otherwise."""
+        if result.ok and self.objective not in result.metrics:
+            # A contract violation (task ran but didn't report the objective)
+            # is a programming error, not a flaky run — surface it loudly.
             raise KeyError(
                 f"Task.run did not report the objective {self.objective!r}; "
-                f"got metrics {sorted(metrics)}"
+                f"got metrics {sorted(result.metrics)}"
             )
-        return {k: float(v) for k, v in metrics.items()}
+        self.store.add(
+            task=task_name,
+            objective=self.objective,
+            direction=self.direction,
+            config=config,
+            seed=seed,
+            metrics=result.metrics or {},
+            env=env_snapshot,
+            parent=parent,
+            error=result.error,
+        )
 
     def _parent_for(self, history: list[Run]) -> str | None:
         """The run a new proposal is derived from: the best so far."""

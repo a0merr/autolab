@@ -42,6 +42,22 @@ class Agent(ABC):
         so an agent may be approximate; it must not crash the loop.
         """
 
+    def propose_batch(
+        self,
+        space: space_mod.Space,
+        history: History,
+        objective: str,
+        direction: str,
+        k: int,
+    ) -> list[dict[str, Any]]:
+        """Return *k* configs to try in parallel.
+
+        The default asks :meth:`propose` ``k`` times. Agents that can reason
+        about a whole batch at once (e.g. to keep proposals diverse) should
+        override this.
+        """
+        return [self.propose(space, history, objective, direction) for _ in range(k)]
+
 
 class RandomAgent(Agent):
     """Uniform random search. Deterministic for a given seed."""
@@ -111,6 +127,33 @@ class AnthropicAgent(Agent):
             # rather than aborting the loop.
             return self._fallback.propose(space, history, objective, direction)
 
+    def propose_batch(self, space, history, objective, direction, k):
+        if k == 1:
+            return [self.propose(space, history, objective, direction)]
+        space_mod.validate_space(space)
+        prompt = (
+            self._build_prompt(space, history, objective, direction)
+            + f"\n\nPropose {k} DIVERSE next configs as a JSON array of "
+            f"{k} objects (explore different regions). Output only the array."
+        )
+        try:
+            message = self._client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = "".join(
+                block.text for block in message.content if block.type == "text"
+            )
+            configs = _extract_json_array(text)
+            if len(configs) >= k:
+                return configs[:k]
+        except Exception:  # pragma: no cover - network / parse fallbacks
+            pass
+        # Fall back to k independent single proposals (each its own draw).
+        return super().propose_batch(space, history, objective, direction, k)
+
     def _build_prompt(self, space, history, objective, direction) -> str:
         recent = list(history)[-self._history_window :]
         rows = [{"config": r.config, "metrics": r.metrics} for r in recent]
@@ -149,3 +192,18 @@ def _extract_json(text: str) -> dict[str, Any]:
     if match:
         return json.loads(match.group(0))
     raise ValueError(f"no JSON object found in response: {text[:200]!r}")
+
+
+def _extract_json_array(text: str) -> list[dict[str, Any]]:
+    """Parse a JSON array of config objects from an LLM response."""
+    text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            raise ValueError(f"no JSON array found in response: {text[:200]!r}")
+        data = json.loads(match.group(0))
+    if not isinstance(data, list):
+        raise ValueError("expected a JSON array of config objects")
+    return data
