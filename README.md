@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
  
-> ⚠️ **Status: early development.** The API and design below describe the target. Sections marked _planned_ are not yet implemented. autolab grew out of an earlier project that auto-tuned a small GPT; this is the generalization of that idea into a model- and task-agnostic framework.
+> **Status: working, early.** The core loop, versioned run store, replay, CLI, analysis, and both agent backends are implemented and tested (see the [roadmap](#roadmap) for what's done vs. planned). autolab grew out of an earlier project that auto-tuned a small GPT; this is the generalization of that idea into a model- and task-agnostic framework. Try it in 30 seconds with `python quickstart.py` — no API key required.
  
 ---
  
@@ -159,14 +159,15 @@ autolab/
  
 ## Roadmap
  
-- [ ] Core propose → run → analyze loop
-- [ ] Versioned run store with replay
-- [ ] `Task` plugin interface
-- [ ] Anthropic agent backend
-- [ ] CLI: list / show / replay / report
-- [ ] Analysis: cross-run comparison + search-tree visualization
-- [ ] Swappable agent backends
-- [ ] Example tasks: hyperparameter tuning, prompt optimization, feature selection
+- [x] Core propose → run → analyze loop
+- [x] Versioned run store with replay
+- [x] `Task` plugin interface
+- [x] Anthropic agent backend
+- [x] CLI: list / show / replay / report
+- [x] Analysis: cross-run comparison + search-tree visualization
+- [x] Swappable agent backends (`Agent` interface; `RandomAgent` + `AnthropicAgent` ship)
+- [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization
+- [ ] Example task: feature selection
 - [ ] Parallel experiment execution
 ---
  
