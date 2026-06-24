@@ -2,12 +2,30 @@
  
 **A framework for autonomous ML experimentation: an agent proposes hypotheses, runs experiments against any model or task, and analyzes the results — with versioned runs, full reproducibility, and a plugin interface for custom objectives.**
  
+[![CI](https://github.com/a0merr/autolab/actions/workflows/ci.yml/badge.svg)](https://github.com/a0merr/autolab/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
- 
-> **Status: working, early.** The core loop, versioned run store, replay, CLI, analysis, and both agent backends are implemented and tested (see the [roadmap](#roadmap) for what's done vs. planned). autolab grew out of an earlier project that auto-tuned a small GPT; this is the generalization of that idea into a model- and task-agnostic framework. Try it in 30 seconds with `python quickstart.py` — no API key required.
- 
+
+<!-- Record the demo (see docs/RECORDING.md), save as docs/demo.gif, then
+     uncomment the line below to put it above the fold:
+![autolab demo](docs/demo.gif)
+-->
+
+> **Status: working, early.** The core loop, versioned run store, replay, CLI, analysis, and both agent backends are implemented and tested (see the [roadmap](#roadmap) for what's done vs. planned). autolab grew out of an earlier project that auto-tuned a small GPT; this is the generalization of that idea into a model- and task-agnostic framework.
+
+## Try it in 30 seconds
+
+No API key, no training, no GPU — the demo drives a real search with the built-in random agent:
+
+```bash
+git clone https://github.com/a0merr/autolab.git
+cd autolab && pip install -e .
+python quickstart.py
+```
+
+You'll watch the agent run an experiment loop, print a report with the best run and the search tree, and **replay the best run to the exact same metric** — that reproducibility is the whole point. Swap in the LLM agent and your own `Task` to point it at a real model.
+
 ---
  
 ## What this is
