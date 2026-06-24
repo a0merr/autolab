@@ -154,6 +154,28 @@ That's the whole extension surface. The agent, the run store, reproducibility, a
  
 ---
  
+## Parallel execution
+
+Run experiments in batched rounds across processes. The agent proposes a whole batch from the current history; results are written to the store in submission order, so **the run store is identical whether you run serial or parallel** — only wall-clock changes.
+
+```python
+from autolab import Lab, ProcessExecutor
+from tasks.sklearn_tuning import GradientBoostingTuning
+
+lab = Lab(
+    GradientBoostingTuning(),
+    objective="accuracy",
+    budget=40,
+    concurrency=8,                          # up to 8 experiments at once
+    executor=ProcessExecutor(max_workers=8),
+)
+best = lab.run()
+```
+
+The default is `SerialExecutor` with `concurrency=1` — identical to the sequential loop. A job that crashes is captured as a failed run (with its error) rather than killing the batch, so the search always completes and stays auditable. With the LLM agent, keep `concurrency` modest (4–8): the bigger the batch, the less each proposal can learn from the others in the same round.
+ 
+---
+ 
 ## Run store & reproducibility
  
 Each run is persisted as a versioned record containing:
@@ -202,7 +224,7 @@ autolab/
 - [x] Analysis: cross-run comparison + search-tree visualization
 - [x] Swappable agent backends (`Agent` interface; `RandomAgent` + `AnthropicAgent` ship)
 - [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization, feature selection
-- [ ] Parallel experiment execution
+- [x] Parallel experiment execution (batched rounds; `SerialExecutor` + `ProcessExecutor`)
 ---
  
 ## Testing
