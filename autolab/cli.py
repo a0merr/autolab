@@ -1,9 +1,9 @@
 """Command-line interface: inspect, replay, and report on stored runs.
 
-    autolab runs list                 # every experiment, newest first
-    autolab runs show <run_id>        # full config + metrics for one run
-    autolab replay <run_id>           # re-execute it exactly
-    autolab report                    # summary of the search
+autolab runs list                 # every experiment, newest first
+autolab runs show <run_id>        # full config + metrics for one run
+autolab replay <run_id>           # re-execute it exactly
+autolab report                    # summary of the search
 """
 
 from __future__ import annotations
