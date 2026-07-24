@@ -79,6 +79,14 @@ So `max_seconds` overshoots by at most one experiment and `max_cost_usd` by at
 most one round's worth of agent calls. Both bounds are documented on the class
 rather than left to be discovered from a bill.
 
+"At most one experiment" is only a bound if experiments end. A job wedged in a
+stuck kernel or a socket with no timeout of its own makes it unbounded, and no
+breaker can fire while it hangs — the loop is inside `run_batch`, not between
+runs. `ProcessExecutor(timeout=…)` is what closes that: past the deadline the
+workers are killed, the unfinished jobs are recorded as failed runs, and the
+search continues. A hang then reaches `max_consecutive_errors` by the same path
+a crash does.
+
 Tripping raises `BreakerTripped` (a `RuntimeError`, so existing handlers still
 catch it) carrying the reason and the run count. It is a **stop, not a
 rollback** — the store is append-only and everything written before the trip
@@ -118,6 +126,15 @@ plausible-looking store. Two mitigations:
 - Configuration errors (400/401/403/404 — bad key, unknown model, rejected
   schema) are **re-raised**, not swallowed. They recur on every call, so
   falling back is never the right answer.
+
+Failures are also made visible to the *agent*, which is a different audience.
+A failed run reached the model as an empty metrics dict with no explanation, so
+it could not distinguish "this config scored badly" from "this config crashed
+the trainer" — and kept proposing into the region that crashes until
+`max_consecutive_errors` stopped the search. History rows now carry `failed`
+and a 200-character excerpt of the error: enough to recognize an OOM, not
+enough for one stack trace to crowd out the rest of the history. An experiment
+is only worth its cost if its outcome reaches the next proposal.
 
 ## Layer 5: say what happened, after the process is gone
 

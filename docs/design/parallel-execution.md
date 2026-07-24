@@ -124,6 +124,20 @@ honestly (budget count + audit stay truthful) instead of silently dropped.
    store an `error` record, continue.
 9. **`parent` semantics** — all `K` in a round share the round-start best as
    parent; the search tree branches `K`-wide per round. Intended; document it.
+10. **Pool per batch** — the first implementation built a `ProcessPoolExecutor`
+    inside `run_batch`, so every round paid a fresh interpreter per worker:
+    ~1.7s measured per batch on a task that runs in microseconds, which a
+    100-run search at `concurrency=2` pays fifty times. *Solved* by holding the
+    pool for the executor's lifetime (`close()`, context manager, `__del__`).
+11. **A job that never finishes** — no breaker can help, because breakers are
+    only checked between experiments, and `max_seconds` cannot preempt a
+    running job. *Solved* by `ProcessExecutor(timeout=…)`: past the batch
+    deadline the workers are killed, unfinished jobs are recorded as failed
+    runs, and the next batch gets a fresh pool. A job that had already finished
+    when the deadline fired keeps its real result — the same rule as everywhere
+    else here, that work already paid for is not thrown away. Killing needs the
+    pool's private `_processes`, since `shutdown` has no public way to stop a
+    running child; there is a fallback if a future CPython drops it.
 
 ## Rollout
 

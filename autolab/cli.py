@@ -139,7 +139,10 @@ def cmd_report(args: argparse.Namespace) -> int:
     objective, direction = _infer_objective(store, args.objective)
     runs = store.list(newest_first=False)
     s = analysis.summarize(runs, objective, direction)
-    print(f"runs: {s.n_runs}  objective: {objective} ({direction})")
+    print(
+        f"runs: {s.n_runs} ({s.n_scored} scored)  "
+        f"objective: {objective} ({direction})"
+    )
     if s.best_score is None:
         print("(no scored runs)")
         return 0

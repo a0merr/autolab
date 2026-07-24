@@ -242,7 +242,7 @@ class Lab:
         lines = [
             f"autolab report — task={self.task.task_name} "
             f"objective={self.objective} ({self.direction})",
-            f"runs: {s.n_runs}",
+            f"runs: {s.n_runs} ({s.n_scored} scored)",
         ]
         if s.best_score is not None:
             lines += [
