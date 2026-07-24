@@ -17,6 +17,7 @@ author has to learn, and it is trivial for an LLM agent to read and write.
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Any, Mapping
 
@@ -105,15 +106,50 @@ def clip(config: Mapping[str, Any], space: Space) -> dict[str, Any]:
 
 def _as_number(value: Any, name: str) -> float:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         raise SpaceError(f"parameter {name!r} expected a number, got {value!r}")
+    # NaN and inf survive json.loads and defeat min/max clamping silently
+    # (max(lo, min(hi, nan)) returns hi), so reject them here instead.
+    if not math.isfinite(number):
+        raise SpaceError(f"parameter {name!r} must be finite, got {value!r}")
+    return number
 
 
 def _nearest_choice(value: Any, choices: list[Any]) -> Any:
     """Pick the closest numeric choice, else the first choice."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(value):
+            return choices[0]
         numeric = [c for c in choices if isinstance(c, (int, float))]
         if numeric:
             return min(numeric, key=lambda c: abs(c - value))
     return choices[0]
+
+
+def coerce(
+    config: Mapping[str, Any], space: Space, rng: random.Random
+) -> dict[str, Any]:
+    """Force *config* into *space*, substituting a random draw where it can't.
+
+    This is :func:`clip` with the sharp edges removed. ``clip`` raises when a
+    parameter is missing or non-numeric, which is the right behaviour for a
+    config a human wrote — but an agent's proposal is untrusted input, and a
+    malformed one must not take down an overnight search. Here a parameter
+    that cannot be salvaged is replaced by a fresh sample from its own spec,
+    so the returned config is always valid and always complete.
+
+    Per-parameter rather than all-or-nothing: one bad entry costs one
+    resampled value, not the agent's whole proposal.
+    """
+    validate_space(space)
+    out: dict[str, Any] = {}
+    for name, spec in space.items():
+        single = {name: spec}
+        try:
+            if name not in config:
+                raise SpaceError(f"config is missing parameter {name!r}")
+            out[name] = clip({name: config[name]}, single)[name]
+        except SpaceError:
+            out[name] = sample(single, rng)[name]
+    return out

@@ -70,7 +70,8 @@ while done < self.budget:
     history = self.store.list(newest_first=False)
     parent = self._parent_for(history)            # best-so-far at round start
     raw = self.agent.propose_batch(self._space, history, ..., k)
-    configs = [space.clip(r, self._space) for r in raw]
+    # Shipped as space.coerce(...) — see docs/design/unattended-safety.md.
+    configs = [space.coerce(r, self._space, self._repair_rng) for r in raw]
     jobs = [(cfg, self.seed + done + j) for j, cfg in enumerate(configs)]
     results = self.executor.run_batch(self.task.qualified_name(), jobs)
     for (cfg, seed), res in zip(jobs, results):   # parent owns ALL writes
