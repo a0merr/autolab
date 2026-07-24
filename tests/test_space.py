@@ -58,3 +58,52 @@ def test_clip_clamps_and_snaps():
 def test_clip_missing_param_raises():
     with pytest.raises(sp.SpaceError):
         sp.clip({"lr": 0.5}, {"lr": (0.0, 1.0), "dim": [1, 2]})
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_clip_rejects_non_finite(bad):
+    # json.loads happily parses NaN/Infinity, and max(lo, min(hi, nan)) would
+    # silently return hi. Reject instead of pretending to clamp.
+    with pytest.raises(sp.SpaceError):
+        sp.clip({"lr": bad}, {"lr": (0.0, 1.0)})
+
+
+def test_clip_rejects_non_numeric():
+    with pytest.raises(sp.SpaceError):
+        sp.clip({"lr": "fast"}, {"lr": (0.0, 1.0)})
+
+
+# -- coerce: the never-raising variant the loop uses -----------------------
+
+
+def test_coerce_fills_a_missing_parameter():
+    space = {"lr": (0.0, 1.0), "dim": [64, 128]}
+    out = sp.coerce({"lr": 0.5}, space, random.Random(0))
+    assert out["lr"] == 0.5  # good value kept
+    assert out["dim"] in (64, 128)  # missing one resampled
+
+
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), "fast", None, {"a": 1}, [1, 2]]
+)
+def test_coerce_replaces_unusable_values(value):
+    out = sp.coerce({"lr": value}, {"lr": (0.0, 1.0)}, random.Random(0))
+    assert 0.0 <= out["lr"] <= 1.0
+
+
+def test_coerce_still_clamps_and_snaps():
+    space = {"lr": (0.0, 1.0), "dim": [64, 128, 256], "layers": (1, 4)}
+    out = sp.coerce({"lr": 5.0, "dim": 130, "layers": 99}, space, random.Random(0))
+    assert out == {"lr": 1.0, "dim": 128, "layers": 4}
+
+
+def test_coerce_ignores_unknown_keys():
+    out = sp.coerce({"lr": 0.5, "bogus": 1}, {"lr": (0.0, 1.0)}, random.Random(0))
+    assert out == {"lr": 0.5}
+
+
+def test_coerce_is_deterministic_for_seed():
+    space = {"lr": (0.0, 1.0), "dim": [64, 128]}
+    a = sp.coerce({}, space, random.Random(7))
+    b = sp.coerce({}, space, random.Random(7))
+    assert a == b

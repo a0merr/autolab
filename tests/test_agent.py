@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import random
+import pytest
 
 from autolab import RandomAgent
 from autolab import agent as agent_mod
@@ -30,6 +30,33 @@ def test_describe_space_shapes():
     assert desc["k"] == {"type": "choice", "options": [1, 2]}
 
 
+def test_config_schema_pins_types_and_requires_every_param():
+    schema = agent_mod._config_schema({"lr": (1e-3, 1.0), "n": (1, 8), "k": [1, 2]})
+    assert schema["properties"]["lr"] == {"type": "number"}
+    assert schema["properties"]["n"] == {"type": "integer"}
+    assert schema["properties"]["k"] == {"enum": [1, 2]}
+    assert schema["required"] == ["k", "lr", "n"]
+    assert schema["additionalProperties"] is False
+
+
+def test_batch_schema_wraps_configs_in_an_array():
+    schema = agent_mod._batch_schema({"x": (0.0, 1.0)})
+    assert schema["required"] == ["configs"]
+    assert schema["properties"]["configs"]["type"] == "array"
+
+
+def test_extract_configs_accepts_batch_array_and_bare_object():
+    assert agent_mod._extract_configs('{"configs": [{"x": 1}, {"x": 2}]}') == [
+        {"x": 1},
+        {"x": 2},
+    ]
+    assert agent_mod._extract_configs('[{"x": 1}]') == [{"x": 1}]
+    assert agent_mod._extract_configs('{"x": 1}') == [{"x": 1}]
+
+
+# -- fake client -----------------------------------------------------------
+
+
 class _FakeBlock:
     type = "text"
 
@@ -37,40 +64,122 @@ class _FakeBlock:
         self.text = text
 
 
+class _FakeUsage:
+    def __init__(self, input_tokens, output_tokens):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_input_tokens = 0
+        self.cache_creation_input_tokens = 0
+
+
 class _FakeMessage:
-    def __init__(self, text):
+    def __init__(self, text, usage):
         self.content = [_FakeBlock(text)]
+        self.usage = usage
 
 
 class _FakeMessages:
-    def __init__(self, text):
+    """Returns *text*, or raises *error*, recording every request."""
+
+    def __init__(self, text=None, error=None, usage=(100, 20)):
         self._text = text
-        self.calls = 0
+        self._error = error
+        self._usage = usage
+        self.requests = []
 
     def create(self, **kwargs):
-        self.calls += 1
-        return _FakeMessage(self._text)
+        self.requests.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        return _FakeMessage(self._text, _FakeUsage(*self._usage))
 
 
-def _make_anthropic_agent(text):
-    """Build an AnthropicAgent without importing the real SDK."""
-    agent = agent_mod.AnthropicAgent.__new__(agent_mod.AnthropicAgent)
-    agent._client = type("C", (), {"messages": _FakeMessages(text)})()
-    agent._model = "test"
-    agent._max_tokens = 64
-    agent._history_window = 10
-    agent._fallback = RandomAgent(seed=0)
-    return agent
+class _FakeClient:
+    def __init__(self, messages):
+        self.messages = messages
+
+
+class _ApiError(Exception):
+    def __init__(self, status_code, message="boom"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _agent(text=None, error=None, **kwargs):
+    return agent_mod.AnthropicAgent(
+        client=_FakeClient(_FakeMessages(text=text, error=error)), **kwargs
+    )
 
 
 def test_anthropic_agent_parses_response():
-    agent = _make_anthropic_agent('{"x": 0.5, "k": 2}')
+    agent = _agent('{"configs": [{"x": 0.5, "k": 2}]}')
     out = agent.propose({"x": (0.0, 1.0), "k": [1, 2, 3]}, [], "score", "max")
     assert out == {"x": 0.5, "k": 2}
+    assert agent.consecutive_failures == 0
+
+
+def test_request_carries_schema_and_effort():
+    agent = _agent('{"configs": [{"x": 0.5}]}', effort="low")
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    request = agent._client.messages.requests[0]
+    output_config = request["output_config"]
+    assert output_config["effort"] == "low"
+    assert output_config["format"]["type"] == "json_schema"
+    assert output_config["format"]["schema"]["required"] == ["configs"]
+    # temperature is rejected by current models — it must never be sent.
+    assert "temperature" not in request
+
+
+def test_structured_output_can_be_disabled():
+    agent = _agent('{"configs": [{"x": 0.5}]}', structured_output=False)
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    assert "format" not in agent._client.messages.requests[0]["output_config"]
 
 
 def test_anthropic_agent_falls_back_on_garbage():
-    agent = _make_anthropic_agent("sorry, no JSON here")
+    agent = _agent("sorry, no JSON here")
     out = agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
     # Fell back to a random sample inside the space rather than crashing.
     assert 0.0 <= out["x"] <= 1.0
+    assert agent.consecutive_failures == 1
+    assert "ValueError" in agent.last_error
+
+
+def test_transient_error_falls_back_and_counts():
+    agent = _agent(error=_ApiError(529, "overloaded"))
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    assert agent.consecutive_failures == 2
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_config_errors_raise_instead_of_degrading(status):
+    agent = _agent(error=_ApiError(status))
+    with pytest.raises(_ApiError):
+        agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+
+
+def test_short_batch_is_topped_up_not_discarded():
+    agent = _agent('{"configs": [{"x": 0.25}]}')
+    out = agent.propose_batch({"x": (0.0, 1.0)}, [], "score", "max", 3)
+    assert len(out) == 3
+    assert out[0] == {"x": 0.25}  # the model's proposal is kept
+    assert all(0.0 <= c["x"] <= 1.0 for c in out)
+
+
+def test_usage_and_cost_accumulate():
+    agent = _agent('{"configs": [{"x": 0.5}]}', model="claude-opus-5")
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    assert agent.usage.calls == 2
+    assert agent.usage.input_tokens == 200
+    assert agent.usage.output_tokens == 40
+    # 200 in @ $5/MTok + 40 out @ $25/MTok
+    assert agent.cost_usd() == pytest.approx((200 * 5 + 40 * 25) / 1_000_000)
+
+
+def test_failed_call_records_no_usage():
+    agent = _agent(error=_ApiError(500))
+    agent.propose({"x": (0.0, 1.0)}, [], "score", "max")
+    assert agent.usage.calls == 0
+    assert agent.cost_usd() == 0.0

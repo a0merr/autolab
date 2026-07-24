@@ -11,8 +11,8 @@ does depend on the config, so the search has a genuine optimum to find.
 
 To turn this into a real *prompt* optimization, keep the exact same structure
 and replace ``_classify`` with a call to your LLM, mapping the config to prompt
-knobs (number of few-shot examples, instruction wording, temperature). The Task
-interface does not change — only the body of ``run``.
+knobs (number of few-shot examples, instruction wording, reasoning effort). The
+Task interface does not change — only the body of ``run``.
 
     from autolab import Lab
     from tasks.prompt_optimization import SentimentPipeline

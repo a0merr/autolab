@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from autolab import Lab, ProcessExecutor, RandomAgent, SerialExecutor
+from autolab import CircuitBreaker, Lab, ProcessExecutor, RandomAgent, SerialExecutor
 from autolab.executors import Result, _run_job
 from tasks.quadratic import Quadratic
 
@@ -51,6 +51,9 @@ def test_failed_job_is_recorded_not_raised(tmp_path):
         agent=RandomAgent(seed=0),
         store=tmp_path / "f",
         concurrency=2,
+        # This test is about the executor capturing failures, not about the
+        # breaker stopping them — see test_guard.py for that.
+        breaker=CircuitBreaker.off(),
     )
     # All experiments fail → no best run, but the loop completes and records them.
     try:
