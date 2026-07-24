@@ -7,12 +7,14 @@ budget is spent. It then returns the best run found.
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Any
 
 from . import analysis, env, space as space_mod
 from .agent import Agent, RandomAgent
 from .executors import Executor, SerialExecutor
+from .guard import CircuitBreaker
 from .store import DEFAULT_STORE_DIR, Run, RunStore
 from .task import Task
 
@@ -32,6 +34,7 @@ class Lab:
         seed: int = 0,
         concurrency: int = 1,
         executor: Executor | None = None,
+        breaker: CircuitBreaker | None = None,
     ) -> None:
         if direction not in ("max", "min"):
             raise ValueError(f"direction must be 'max' or 'min', got {direction!r}")
@@ -48,6 +51,12 @@ class Lab:
         self.seed = seed
         self.concurrency = concurrency
         self.executor = executor or SerialExecutor()
+        # Defaults on: an unattended loop should stop itself. Pass
+        # CircuitBreaker.off() to run the full budget regardless.
+        self.breaker = breaker if breaker is not None else CircuitBreaker()
+        # Draws replacement values when an agent proposal is unusable. Seeded
+        # off the lab seed so repairs are reproducible too.
+        self._repair_rng = random.Random(seed)
 
         if isinstance(store, RunStore):
             self.store = store
@@ -66,9 +75,13 @@ class Lab:
         the agent proposes the whole batch from the current history; results are
         written to the store in submission order, so the store is identical
         regardless of how jobs are scheduled.
+
+        Raises :class:`~autolab.guard.BreakerTripped` if a circuit breaker
+        limit fires. Runs recorded before that point stay in the store.
         """
         env_snapshot = env.capture()
         task_name = self.task.qualified_name()
+        self.breaker.start()
 
         done = 0
         while done < self.budget:
@@ -76,16 +89,23 @@ class Lab:
             history = self.store.list(newest_first=False)
             parent = self._parent_for(history)
 
+            self.breaker.before_batch(self.agent)
             raw_batch = self.agent.propose_batch(
                 self._space, history, self.objective, self.direction, k
             )
-            configs = [space_mod.clip(raw, self._space) for raw in raw_batch]
+            configs = [
+                space_mod.coerce(raw, self._space, self._repair_rng)
+                for raw in raw_batch
+            ]
             jobs = [(cfg, self.seed + done + j) for j, cfg in enumerate(configs)]
 
             results = self.executor.run_batch(task_name, jobs)
 
             for (config, seed), result in zip(jobs, results):
-                self._record(config, seed, result, env_snapshot, parent, task_name)
+                run = self._record(
+                    config, seed, result, env_snapshot, parent, task_name
+                )
+                self.breaker.observe(run, self.objective)
             done += k
 
         best = self.best()
@@ -95,7 +115,7 @@ class Lab:
             )
         return best
 
-    def _record(self, config, seed, result, env_snapshot, parent, task_name) -> None:
+    def _record(self, config, seed, result, env_snapshot, parent, task_name) -> Run:
         """Persist one job's outcome — metrics on success, an error otherwise."""
         if result.ok and self.objective not in result.metrics:
             # A contract violation (task ran but didn't report the objective)
@@ -104,7 +124,7 @@ class Lab:
                 f"Task.run did not report the objective {self.objective!r}; "
                 f"got metrics {sorted(result.metrics)}"
             )
-        self.store.add(
+        return self.store.add(
             task=task_name,
             objective=self.objective,
             direction=self.direction,

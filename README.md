@@ -82,6 +82,41 @@ Because every run is captured as a versioned artifact, the whole search is repro
 - **Reproducibility by default** — fixed seeds and captured configs mean any run can be replayed exactly.
 - **Plugin interface** — add a new objective or task by implementing one small class; no changes to the core loop.
 - **Pluggable agent backend** — works with the Anthropic API out of the box; the agent interface is swappable.
+- **Safe to leave running** — schema-constrained proposals, sanitized configs, and circuit breakers that stop a diverging or crash-looping search before it burns the night.
+---
+
+## Running unattended
+
+An overnight search is only useful if it stops itself when things go wrong. Three layers do that.
+
+**Proposals are constrained, not trusted.** `AnthropicAgent` derives a JSON Schema from your parameter space and passes it as a structured output, so a response is guaranteed to be valid JSON containing every parameter with the right type — a categorical can only be one of your listed choices. Bounds are then enforced by `space.coerce`, which clamps out-of-range numbers, snaps categoricals to the nearest choice, and resamples anything unusable (missing key, `NaN`, a string where a float belongs). A malformed proposal costs one resampled value, never a crashed loop.
+
+> Note: `temperature` is not a knob on current Claude models — it is rejected with a 400. Reasoning depth and cost are controlled with `output_config.effort`, which `AnthropicAgent` defaults to `"low"`.
+
+**Circuit breakers stop a runaway loop.** Every `Lab` gets one by default:
+
+```python
+from autolab import CircuitBreaker, Lab
+
+lab = Lab(
+    task=TuneClassifier(),
+    objective="accuracy",
+    budget=200,
+    breaker=CircuitBreaker(
+        max_consecutive_errors=3,      # crashing task / broken environment
+        max_consecutive_nonfinite=3,   # loss diverged to NaN or inf
+        max_agent_failures=3,          # agent silently degraded to random search
+        max_cost_usd=5.00,             # estimated API spend cap
+        max_seconds=8 * 3600,          # wall-clock cap
+    ),
+)
+lab.run()   # raises BreakerTripped when a limit fires
+```
+
+Tripping is a stop, not a rollback: everything already recorded stays in the store, and `BreakerTripped` names the limit that fired. Pass `CircuitBreaker.off()` to disable.
+
+**Failures stay visible.** A transient API failure degrades to a random sample so one bad response can't kill an eight-hour run — but it increments `agent.consecutive_failures`, so `max_agent_failures` catches a search that has quietly become random search. Configuration errors (bad key, unknown model, rejected schema) are raised immediately instead, since they would recur on every call. Estimated spend is available any time via `agent.cost_usd()`.
+
 ---
  
 ## Installation
@@ -225,6 +260,7 @@ autolab/
 - [x] Swappable agent backends (`Agent` interface; `RandomAgent` + `AnthropicAgent` ship)
 - [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization, feature selection
 - [x] Parallel experiment execution (batched rounds; `SerialExecutor` + `ProcessExecutor`)
+- [x] Unattended-run safety: schema-constrained proposals, config sanitization, circuit breakers (error / divergence / cost / wall-clock)
 ---
  
 ## Testing

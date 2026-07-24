@@ -9,12 +9,28 @@ later.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 DEFAULT_STORE_DIR = ".autolab/runs"
+
+
+def is_scored(run: "Run", objective: str) -> bool:
+    """True if *run* reported *objective* as a finite number.
+
+    A run that diverged to NaN or inf reported *something*, but not a value
+    any comparison can rank — treat it as unscored everywhere rankings are
+    computed.
+    """
+    if objective not in run.metrics:
+        return False
+    try:
+        return math.isfinite(float(run.metrics[objective]))
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -128,7 +144,7 @@ class RunStore:
 
     def best(self, objective: str, direction: str) -> Run | None:
         """The run with the best objective value, or ``None`` if empty."""
-        candidates = [r for r in self if objective in r.metrics]
+        candidates = [r for r in self if is_scored(r, objective)]
         if not candidates:
             return None
         pick = max if direction == "max" else min

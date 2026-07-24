@@ -10,12 +10,17 @@ from dataclasses import dataclass
 from statistics import mean, pstdev
 from typing import Any
 
-from .store import Run
+from .store import Run, is_scored
 
 
 def scored(runs: list[Run], objective: str) -> list[Run]:
-    """Runs that reported *objective*, in store order."""
-    return [r for r in runs if objective in r.metrics]
+    """Runs that reported a usable *objective*, in store order.
+
+    A diverged run reporting NaN is excluded: NaN compares false against
+    everything, so leaving it in lets it win ``max()`` by arriving first and
+    poisons the mean and standard deviation.
+    """
+    return [r for r in runs if is_scored(r, objective)]
 
 
 def rank(runs: list[Run], objective: str, direction: str) -> list[Run]:
@@ -93,7 +98,7 @@ def search_tree(runs: list[Run]) -> str:
         for run in children.get(parent_id, []):
             metric = (
                 f"{run.objective}={run.metrics[run.objective]:.4g}"
-                if run.objective in run.metrics
+                if is_scored(run, run.objective)
                 else "(no objective)"
             )
             lines.append(f"{'  ' * depth}{run.run_id}  {metric}")

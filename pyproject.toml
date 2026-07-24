@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autolab"
-version = "0.2.0"
+version = "0.3.0"
 description = "A framework for autonomous ML experimentation: an agent proposes hypotheses, runs experiments, and analyzes results with versioned, reproducible runs."
 readme = "README.md"
 requires-python = ">=3.11"
