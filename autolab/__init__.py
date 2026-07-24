@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from .agent import Agent, AnthropicAgent, RandomAgent
 from .executors import Executor, ProcessExecutor, Result, SerialExecutor
-from .guard import BreakerTripped, CircuitBreaker, TokenUsage
+from .guard import (
+    PRICING_USD_PER_MTOK,
+    BreakerTripped,
+    CircuitBreaker,
+    TokenUsage,
+)
 from .lab import Lab
 from .replay import ReplayResult, replay
 from .store import Run, RunStore
@@ -32,6 +37,7 @@ __all__ = [
     "CircuitBreaker",
     "BreakerTripped",
     "TokenUsage",
+    "PRICING_USD_PER_MTOK",
     "replay",
     "ReplayResult",
     "__version__",

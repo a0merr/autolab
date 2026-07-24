@@ -25,10 +25,18 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-# Anthropic list prices in USD per million tokens, as (input, output).
-# Cached: 2026-06-24. Only used for the spend estimate that drives
-# ``max_cost_usd``; it is an estimate, not a billing record.
-_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+#: Anthropic list prices in USD per million tokens, as ``(input, output)``.
+#:
+#: Cached 2026-06-24, and only used for the spend estimate behind
+#: ``max_cost_usd`` — it is an estimate, not a billing record. List prices
+#: change and negotiated rates differ, so this is public and mutable::
+#:
+#:     from autolab.guard import PRICING_USD_PER_MTOK
+#:     PRICING_USD_PER_MTOK["claude-opus-5"] = (4.0, 20.0)
+#:
+#: For a one-off override without touching the module, pass ``pricing=`` to
+#: :meth:`TokenUsage.cost_usd` or to :class:`CircuitBreaker`.
+PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
     "claude-mythos-5": (10.0, 50.0),
     "claude-opus-5": (5.0, 25.0),
@@ -44,9 +52,21 @@ _PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
 CACHE_READ_MULTIPLIER = 0.1
 CACHE_WRITE_MULTIPLIER = 1.25
 
-# An unrecognized model is priced at the most expensive rate we know about, so
-# an unknown model makes the cost breaker fire early rather than late.
-_UNKNOWN_MODEL_RATE = max(_PRICING_USD_PER_MTOK.values())
+
+def _rate_for(
+    model: str, pricing: dict[str, tuple[float, float]]
+) -> tuple[float, float]:
+    """Look up ``(input, output)`` rates, falling back conservatively.
+
+    An unrecognized model is priced at the most expensive rate in the table, so
+    a model this version has never heard of makes the cost breaker fire early
+    rather than never.
+    """
+    if model in pricing:
+        return pricing[model]
+    if not pricing:
+        return (0.0, 0.0)
+    return max(pricing.values())
 
 
 @dataclass
@@ -73,9 +93,16 @@ class TokenUsage:
         self.cache_read_tokens += int(cache_read_tokens or 0)
         self.cache_write_tokens += int(cache_write_tokens or 0)
 
-    def cost_usd(self, model: str) -> float:
-        """Estimated spend so far for *model*, in USD."""
-        rate_in, rate_out = _PRICING_USD_PER_MTOK.get(model, _UNKNOWN_MODEL_RATE)
+    def cost_usd(
+        self, model: str, pricing: dict[str, tuple[float, float]] | None = None
+    ) -> float:
+        """Estimated spend so far for *model*, in USD.
+
+        Pass *pricing* to price against a table other than
+        :data:`PRICING_USD_PER_MTOK` — negotiated rates, or a model this
+        version predates.
+        """
+        rate_in, rate_out = _rate_for(model, pricing or PRICING_USD_PER_MTOK)
         billable_in = (
             self.input_tokens
             + self.cache_read_tokens * CACHE_READ_MULTIPLIER
@@ -121,6 +148,8 @@ class CircuitBreaker:
     :param max_cost_usd: trip once the agent's estimated API spend exceeds
         this. Ignored for agents that make no API calls.
     :param max_seconds: trip once the search has run this long in wall-clock.
+    :param pricing: per-model ``(input, output)`` USD-per-million-token rates
+        used for ``max_cost_usd``. Defaults to :data:`PRICING_USD_PER_MTOK`.
     """
 
     max_consecutive_errors: int | None = 3
@@ -128,6 +157,7 @@ class CircuitBreaker:
     max_agent_failures: int | None = 3
     max_cost_usd: float | None = None
     max_seconds: float | None = None
+    pricing: dict[str, tuple[float, float]] | None = None
 
     _consecutive_errors: int = field(default=0, init=False, repr=False)
     _consecutive_nonfinite: int = field(default=0, init=False, repr=False)
@@ -180,7 +210,7 @@ class CircuitBreaker:
             usage = getattr(agent, "usage", None)
             model = getattr(agent, "model", None)
             if usage is not None and model is not None:
-                spent = usage.cost_usd(model)
+                spent = usage.cost_usd(model, self.pricing)
                 if spent > self.max_cost_usd:
                     self._trip(
                         f"estimated API spend ${spent:.4f} exceeds the "

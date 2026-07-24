@@ -8,13 +8,14 @@ budget is spent. It then returns the best run found.
 from __future__ import annotations
 
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import analysis, env, space as space_mod
 from .agent import Agent, RandomAgent
 from .executors import Executor, SerialExecutor
-from .guard import CircuitBreaker
+from .guard import BreakerTripped, CircuitBreaker
 from .store import DEFAULT_STORE_DIR, Run, RunStore
 from .task import Task
 
@@ -77,36 +78,42 @@ class Lab:
         regardless of how jobs are scheduled.
 
         Raises :class:`~autolab.guard.BreakerTripped` if a circuit breaker
-        limit fires. Runs recorded before that point stay in the store.
+        limit fires. Runs recorded before that point stay in the store, and the
+        reason is written to the store as a ``breaker`` note so an unattended
+        run explains itself after the fact.
         """
         env_snapshot = env.capture()
         task_name = self.task.qualified_name()
         self.breaker.start()
 
         done = 0
-        while done < self.budget:
-            k = min(self.concurrency, self.budget - done)
-            history = self.store.list(newest_first=False)
-            parent = self._parent_for(history)
+        try:
+            while done < self.budget:
+                k = min(self.concurrency, self.budget - done)
+                history = self.store.list(newest_first=False)
+                parent = self._parent_for(history)
 
-            self.breaker.before_batch(self.agent)
-            raw_batch = self.agent.propose_batch(
-                self._space, history, self.objective, self.direction, k
-            )
-            configs = [
-                space_mod.coerce(raw, self._space, self._repair_rng)
-                for raw in raw_batch
-            ]
-            jobs = [(cfg, self.seed + done + j) for j, cfg in enumerate(configs)]
-
-            results = self.executor.run_batch(task_name, jobs)
-
-            for (config, seed), result in zip(jobs, results):
-                run = self._record(
-                    config, seed, result, env_snapshot, parent, task_name
+                self.breaker.before_batch(self.agent)
+                raw_batch = self.agent.propose_batch(
+                    self._space, history, self.objective, self.direction, k
                 )
-                self.breaker.observe(run, self.objective)
-            done += k
+                configs = [
+                    space_mod.coerce(raw, self._space, self._repair_rng)
+                    for raw in raw_batch
+                ]
+                jobs = [(cfg, self.seed + done + j) for j, cfg in enumerate(configs)]
+
+                results = self.executor.run_batch(task_name, jobs)
+
+                for (config, seed), result in zip(jobs, results):
+                    run = self._record(
+                        config, seed, result, env_snapshot, parent, task_name
+                    )
+                    self.breaker.observe(run, self.objective)
+                done += k
+        except BreakerTripped as exc:
+            self._record_trip(exc, task_name)
+            raise
 
         best = self.best()
         if best is None:
@@ -135,6 +142,33 @@ class Lab:
             parent=parent,
             error=result.error,
         )
+
+    def _record_trip(self, exc: BreakerTripped, task_name: str) -> None:
+        """Leave a durable record of why the search stopped.
+
+        A cron-driven run that trips at 3am has nowhere to raise to, so the
+        reason has to survive the process.
+        """
+        note: dict[str, Any] = {
+            "reason": exc.reason,
+            "runs_observed": exc.runs_observed,
+            "task": task_name,
+            "objective": self.objective,
+            "direction": self.direction,
+            "budget": self.budget,
+            "stopped_at": datetime.now(timezone.utc).isoformat(),
+        }
+        usage = getattr(self.agent, "usage", None)
+        model = getattr(self.agent, "model", None)
+        if usage is not None and model is not None:
+            note["agent"] = {
+                "model": model,
+                "calls": usage.calls,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "estimated_cost_usd": round(usage.cost_usd(model), 6),
+            }
+        self.store.write_note("breaker", note)
 
     def _parent_for(self, history: list[Run]) -> str | None:
         """The run a new proposal is derived from: the best so far."""

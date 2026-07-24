@@ -115,6 +115,22 @@ lab.run()   # raises BreakerTripped when a limit fires
 
 Tripping is a stop, not a rollback: everything already recorded stays in the store, and `BreakerTripped` names the limit that fired. Pass `CircuitBreaker.off()` to disable.
 
+A cron-driven run has nowhere to raise to, so the reason is also written to the store and survives the process:
+
+```python
+lab.store.read_note("breaker")
+# {'reason': '3 experiment(s) failed in a row; last error: RuntimeError: boom',
+#  'runs_observed': 3, 'budget': 200, 'stopped_at': '2026-07-24T03:11:02+00:00',
+#  'agent': {'model': 'claude-opus-5', 'calls': 2, 'estimated_cost_usd': 0.0413}}
+```
+
+Spend estimates use a cached list-price table. Override it for negotiated rates or a model this version predates:
+
+```python
+from autolab import PRICING_USD_PER_MTOK
+PRICING_USD_PER_MTOK["claude-opus-5"] = (4.0, 20.0)   # or: CircuitBreaker(pricing={...})
+```
+
 **Failures stay visible.** A transient API failure degrades to a random sample so one bad response can't kill an eight-hour run — but it increments `agent.consecutive_failures`, so `max_agent_failures` catches a search that has quietly become random search. Configuration errors (bad key, unknown model, rejected schema) are raised immediately instead, since they would recur on every call. Estimated spend is available any time via `agent.cost_usd()`.
 
 ---

@@ -211,9 +211,9 @@ class AnthropicAgent(Agent):
             cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
         )
 
-    def cost_usd(self) -> float:
+    def cost_usd(self, pricing: dict[str, tuple[float, float]] | None = None) -> float:
         """Estimated API spend so far, in USD."""
-        return self.usage.cost_usd(self.model)
+        return self.usage.cost_usd(self.model, pricing)
 
     def _build_prompt(self, space, history, objective, direction, k) -> str:
         recent = list(history)[-self._history_window :]

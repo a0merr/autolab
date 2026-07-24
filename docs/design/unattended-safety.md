@@ -79,7 +79,18 @@ stays readable via `autolab runs list`.
 
 Cost is estimated from a cached per-MTok price table plus cache-read/write
 multipliers. An unrecognized model is priced at the highest known rate, so an
-unknown model makes the cap fire early rather than never.
+unknown model makes the cap fire early rather than never. List prices change
+and negotiated rates differ, so `PRICING_USD_PER_MTOK` is public and mutable,
+and both `TokenUsage.cost_usd` and `CircuitBreaker` accept a `pricing`
+override — a stale table must not be the reason a cap silently stops working.
+
+A trip is also **written to the store** as a `breaker` note (reason, run
+count, wall-clock stamp, and agent spend). A `BreakerTripped` raised at 3am in
+a cron job has nowhere to go; the note is what remains in the morning. Notes
+live beside the runs but are matched by a distinct filename shape, so they are
+excluded from iteration, `len()`, and run-id assignment. (That last one was a
+latent bug: `_next_index` counted `*.json`, so *any* stray file in the store
+directory would have shifted the next run id.)
 
 The breaker is duck-typed against the agent (`usage`, `model`,
 `consecutive_failures`, `last_error`), so `RandomAgent` — which has none of
@@ -98,13 +109,29 @@ plausible-looking store. Two mitigations:
   schema) are **re-raised**, not swallowed. They recur on every call, so
   falling back is never the right answer.
 
-## Related fix: NaN could win `best()`
+## Related fixes: NaN in the store
 
-Not a breaker concern, but found alongside it. NaN compares false against
-everything, so `max(runs, key=score)` returned whichever NaN run came first —
-a diverged run could be reported as the best result. `store.is_scored` now
-gates ranking, mean, standard deviation, and the search tree on a finite
-value. A NaN run is still recorded faithfully; it just cannot win.
+Two problems, both found alongside the breaker work, both about a diverged
+metric.
+
+**NaN could win `best()`.** NaN compares false against everything, so
+`max(runs, key=score)` returned whichever NaN run came first — a diverged run
+could be reported as the best result. `store.is_scored` now gates ranking,
+mean, standard deviation, and the search tree on a finite value. A NaN run is
+still recorded faithfully; it just cannot win.
+
+**NaN made the store non-standard JSON.** `json.dumps` emits a bare `NaN`
+token by default. Python reads it back, so autolab never noticed; every other
+parser rejects the file. Non-finite *metrics* are now stored as strings
+(`"NaN"`, `"Infinity"`, `"-Infinity"`) and decoded on read — symmetric, and
+faithful to a real experimental outcome.
+
+Encoding is deliberately scoped to metrics rather than applied to the whole
+record. A generic encoder would have to decode generically too, and a
+categorical whose legitimate value is the string `"NaN"` would silently become
+a float. Everywhere else, `allow_nan=False` raises instead: a non-finite
+config cannot arise from `coerce`, so one indicates a bug worth surfacing
+rather than round-tripping.
 
 ## Deliberately not done
 

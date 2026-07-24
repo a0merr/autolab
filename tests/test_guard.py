@@ -46,6 +46,28 @@ def test_unknown_model_prices_at_the_top_rate():
     assert usage.cost_usd("some-future-model") == pytest.approx(10.0)
 
 
+def test_pricing_can_be_overridden_per_call():
+    usage = TokenUsage()
+    usage.add(input_tokens=1_000_000, output_tokens=1_000_000)
+    negotiated = {"claude-opus-5": (1.0, 2.0)}
+    assert usage.cost_usd("claude-opus-5", negotiated) == pytest.approx(3.0)
+
+
+def test_breaker_uses_the_supplied_pricing_table():
+    class _Agent:
+        model = "claude-opus-5"
+
+        def __init__(self):
+            self.usage = TokenUsage()
+            self.usage.add(input_tokens=1_000_000)
+
+    agent = _Agent()
+    # $5.00 at list price would trip; $0.10 at the negotiated rate does not.
+    CircuitBreaker(
+        max_cost_usd=1.0, pricing={"claude-opus-5": (0.1, 0.5)}
+    ).before_batch(agent)
+
+
 # -- breaker limits --------------------------------------------------------
 
 
@@ -165,3 +187,44 @@ def test_healthy_search_is_unaffected_by_default_breaker(counting_task, store_di
     lab = Lab(counting_task, objective="score", budget=20, store=store_dir)
     lab.run()
     assert len(lab.store) == 20
+    assert lab.store.read_note("breaker") is None
+
+
+def test_trip_reason_is_written_to_the_store(tmp_path):
+    lab = Lab(
+        __import__("tests.conftest", fromlist=["CrashTask"]).CrashTask(),
+        objective="score",
+        budget=100,
+        agent=RandomAgent(seed=0),
+        store=tmp_path / "runs",
+        breaker=CircuitBreaker(max_consecutive_errors=2),
+    )
+    with pytest.raises(BreakerTripped):
+        lab.run()
+
+    # A cron job has nowhere to raise to — the reason must survive the process.
+    note = lab.store.read_note("breaker")
+    assert "failed in a row" in note["reason"]
+    assert note["runs_observed"] == 2
+    assert note["budget"] == 100
+    assert note["objective"] == "score"
+    assert "CrashTask" in note["task"]
+    assert note["stopped_at"].startswith("20")
+
+
+def test_note_does_not_pollute_the_run_listing(tmp_path):
+    lab = Lab(
+        __import__("tests.conftest", fromlist=["CrashTask"]).CrashTask(),
+        objective="score",
+        budget=100,
+        agent=RandomAgent(seed=0),
+        store=tmp_path / "runs",
+        breaker=CircuitBreaker(max_consecutive_errors=2),
+    )
+    with pytest.raises(BreakerTripped):
+        lab.run()
+    # Notes live beside the runs; they must not be counted, iterated, or
+    # allowed to shift the next run id.
+    assert len(lab.store) == 2
+    assert [r.run_id for r in lab.store.list(newest_first=False)] == ["0000", "0001"]
+    assert lab.store._next_index() == 2
