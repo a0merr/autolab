@@ -217,7 +217,7 @@ class AnthropicAgent(Agent):
 
     def _build_prompt(self, space, history, objective, direction, k) -> str:
         recent = list(history)[-self._history_window :]
-        rows = [{"config": r.config, "metrics": r.metrics} for r in recent]
+        rows = [_history_row(r) for r in recent]
         goal = "maximize" if direction == "max" else "minimize"
         ask = (
             f"Propose {k} DIVERSE next configs (explore different regions)."
@@ -234,6 +234,28 @@ class AnthropicAgent(Agent):
         )
 
 
+#: How much of a failed run's error message the agent is shown. Enough to
+#: recognize the failure mode; not enough for one stack trace to crowd out the
+#: rest of the history.
+_ERROR_EXCERPT = 200
+
+
+def _history_row(run: Run) -> dict[str, Any]:
+    """One past run as the agent sees it.
+
+    A failed run carries an error, and it used to be sent as an empty metrics
+    dict with no explanation — so the model could not tell "this config is bad"
+    from "this config crashed the trainer", and kept proposing into the region
+    that crashes until ``max_consecutive_errors`` stopped the search. The
+    experiment is only worth its cost if its outcome reaches the next proposal.
+    """
+    row: dict[str, Any] = {"config": run.config, "metrics": run.metrics}
+    if run.error:
+        row["failed"] = True
+        row["error"] = run.error[:_ERROR_EXCERPT]
+    return row
+
+
 def _is_config_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     return isinstance(status, int) and status in _CONFIG_ERROR_STATUSES
@@ -243,7 +265,17 @@ def _describe_space(space: space_mod.Space) -> dict[str, Any]:
     """Render a space spec as JSON-friendly hints for the agent."""
     out: dict[str, Any] = {}
     for name, spec in space.items():
-        if isinstance(spec, tuple):
+        if isinstance(spec, space_mod.LogRange):
+            # Told explicitly, because a model shown only [1e-5, 1e-1] tends to
+            # propose evenly spaced values and never tries the small decades —
+            # the same mistake uniform sampling makes.
+            out[name] = {
+                "type": "float",
+                "scale": "log",
+                "range": [spec.lo, spec.hi],
+                "hint": "vary this by order of magnitude, not by equal steps",
+            }
+        elif isinstance(spec, tuple):
             lo, hi = spec
             kind = "int" if isinstance(lo, int) and isinstance(hi, int) else "float"
             out[name] = {"type": kind, "range": [lo, hi]}

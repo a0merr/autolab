@@ -115,14 +115,25 @@ lab.run()   # raises BreakerTripped when a limit fires
 
 Tripping is a stop, not a rollback: everything already recorded stays in the store, and `BreakerTripped` names the limit that fired. Pass `CircuitBreaker.off()` to disable.
 
-A cron-driven run has nowhere to raise to, so the reason is also written to the store and survives the process:
+A cron-driven run has nowhere to raise to, so how the search ended is written to the store and survives the process:
 
 ```python
-lab.store.read_note("breaker")
-# {'reason': '3 experiment(s) failed in a row; last error: RuntimeError: boom',
-#  'runs_observed': 3, 'budget': 200, 'stopped_at': '2026-07-24T03:11:02+00:00',
+lab.status()
+# {'status': 'tripped', 'runs_observed': 3, 'budget': 200,
+#  'reason': '3 experiment(s) failed in a row; last error: RuntimeError: boom',
+#  'started_at': '2026-07-24T02:58:11+00:00', 'stopped_at': '2026-07-24T03:11:02+00:00',
 #  'agent': {'model': 'claude-opus-5', 'calls': 2, 'estimated_cost_usd': 0.0413}}
 ```
+
+`status` is one of `running`, `completed`, `tripped`, or `crashed`, and it is written on every exit path — including a clean finish. A note that only appeared on failure would be indistinguishable, the next morning, from one left over from yesterday's search in the same store. A note still reading `running` means the process died without getting to write anything else.
+
+From the shell, `autolab status` prints the same record and exits non-zero unless the search completed cleanly, so a cron wrapper can tell an overnight run that finished from one that stopped without parsing anything:
+
+```sh
+autolab status || notify-me "search stopped early"
+```
+
+`autolab report` prints a one-line banner ahead of the summary when the last search didn't finish — a truncated search otherwise reads as a small but complete one.
 
 Spend estimates use a cached list-price table. Override it for negotiated rates or a model this version predates:
 
@@ -156,13 +167,13 @@ export ANTHROPIC_API_KEY=sk-...
 Define a task by implementing the `Task` interface — `propose_space` describes what the agent is allowed to vary, and `run` executes one experiment and returns metrics. Then hand it to the loop.
  
 ```python
-from autolab import Lab, Task
+from autolab import Lab, LogRange, Task
  
 class TuneClassifier(Task):
     def propose_space(self):
         # What the agent is allowed to change.
         return {
-            "learning_rate": (1e-5, 1e-1),
+            "learning_rate": LogRange(1e-5, 1e-1),   # sampled by magnitude
             "hidden_dim":    [64, 128, 256, 512],
             "dropout":       (0.0, 0.5),
         }
@@ -185,6 +196,17 @@ lab.report()   # summary of the search + best runs
 ```
  
 Every experiment the agent runs is written to the run store and can be inspected, compared, or replayed later.
+
+A parameter spec is one of four things:
+
+| Spec | Meaning |
+|---|---|
+| `(lo, hi)` — both floats | continuous range, sampled uniformly |
+| `(lo, hi)` — both ints | integer range, inclusive |
+| `LogRange(lo, hi)` | float range sampled by order of magnitude; both bounds > 0 |
+| `[a, b, c]` | categorical choice |
+
+Use `LogRange` for anything you think about in orders of magnitude — learning rates, weight decay, regularization strength. Sampled uniformly, `(1e-5, 1e-1)` puts ninety percent of its draws in the top decade and effectively never tries a learning rate below `1e-2`: the search looks like it covered four orders of magnitude while covering one. `LogRange` samples the exponent, so each decade gets equal weight, and the LLM agent is told the scale explicitly.
  
 ---
  
@@ -218,12 +240,14 @@ lab = Lab(
     objective="accuracy",
     budget=40,
     concurrency=8,                          # up to 8 experiments at once
-    executor=ProcessExecutor(max_workers=8),
+    executor=ProcessExecutor(max_workers=8, timeout=1800),
 )
 best = lab.run()
 ```
 
 The default is `SerialExecutor` with `concurrency=1` — identical to the sequential loop. A job that crashes is captured as a failed run (with its error) rather than killing the batch, so the search always completes and stays auditable. With the LLM agent, keep `concurrency` modest (4–8): the bigger the batch, the less each proposal can learn from the others in the same round.
+
+`timeout` is what stops a *hung* experiment, as opposed to a crashing one. Circuit breakers are only checked between experiments, so a job wedged in a stuck kernel or a socket with no timeout of its own can park an overnight search indefinitely and no breaker will fire. Past the deadline the batch's unfinished jobs are killed, recorded as failed runs, and the search moves on — which also means `max_consecutive_errors` sees a hang the same way it sees a crash. The pool is reused across rounds; close it with `close()` or use the executor as a context manager.
  
 ---
  
@@ -236,13 +260,22 @@ Each run is persisted as a versioned record containing:
 | `config` | The exact parameters used |
 | `seed` | Fixed seed for deterministic replay |
 | `metrics` | Everything the task reported |
-| `env` | Library versions + hardware, for honest comparison |
+| `env` | Library versions, platform, git commit **and whether the tree was dirty** |
 | `parent` | The run this one was derived from, so the search is a traceable tree |
+
+`git_dirty` is there because a commit hash on its own overstates what was captured: the code that ran is the commit plus whatever was uncommitted, and a run recorded against a clean-looking hash can't be reconstructed from it.
+
+Two limits on "replayed exactly", both outside what a framework can fix for you:
+
+- **Hash randomization** is fixed at interpreter startup, so if your task's results depend on `set` or `dict` iteration order over strings, set `PYTHONHASHSEED` in the environment *before* launching. (autolab used to set it from inside `seed_everything`, which reads as a guarantee and does nothing.)
+- **GPU kernels.** cuDNN autotuning is disabled for you, but some CUDA ops are non-deterministic by construction. For a hard guarantee add `torch.use_deterministic_algorithms(True)` and `CUBLAS_WORKSPACE_CONFIG=:4096:8` in your task — not forced here, since it makes several common ops raise instead of run.
  
 ```bash
 autolab runs list                 # every experiment, newest first
 autolab runs show <run_id>        # full config + metrics for one run
 autolab replay <run_id>           # re-execute it exactly
+autolab report                    # summary of the search
+autolab status                    # how the last search ended (exit 1 if not cleanly)
 ```
  
 ---
@@ -275,8 +308,9 @@ autolab/
 - [x] Analysis: cross-run comparison + search-tree visualization
 - [x] Swappable agent backends (`Agent` interface; `RandomAgent` + `AnthropicAgent` ship)
 - [x] Example tasks: hyperparameter tuning, prompt/pipeline optimization, feature selection
-- [x] Parallel experiment execution (batched rounds; `SerialExecutor` + `ProcessExecutor`)
-- [x] Unattended-run safety: schema-constrained proposals, config sanitization, circuit breakers (error / divergence / cost / wall-clock)
+- [x] Parallel experiment execution (batched rounds; `SerialExecutor` + `ProcessExecutor`, reused pool, per-batch timeout)
+- [x] Unattended-run safety: schema-constrained proposals, config sanitization, circuit breakers (error / divergence / cost / wall-clock), durable search status
+- [x] Log-scale parameter ranges (`LogRange`)
 ---
  
 ## Testing

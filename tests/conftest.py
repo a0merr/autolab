@@ -4,6 +4,7 @@ editable install, and provide shared fixtures."""
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,27 @@ class CrashTask(Task):
 
     def run(self, config, seed):
         raise RuntimeError("boom")
+
+
+class HangTask(Task):
+    """Hangs whenever ``x >= 0.5`` — for testing the executor timeout.
+
+    Stands in for the real thing: a wedged CUDA kernel, a socket with no
+    timeout of its own. A circuit breaker cannot help, because breakers are
+    only checked between experiments. The declared space only produces hanging
+    configs; the conditional exists so a test can put a fast job and a hung one
+    in the same batch.
+    """
+
+    name = "HangTask"
+
+    def propose_space(self):
+        return {"x": (0.9, 1.0)}
+
+    def run(self, config, seed):
+        if config["x"] >= 0.5:
+            time.sleep(300)
+        return {"score": float(config["x"])}
 
 
 @pytest.fixture

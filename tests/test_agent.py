@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from autolab import RandomAgent
+from autolab import LogRange, RandomAgent
 from autolab import agent as agent_mod
+from autolab.store import Run
 
 
 def test_random_agent_deterministic():
@@ -28,6 +29,75 @@ def test_describe_space_shapes():
     assert desc["lr"]["type"] == "float"
     assert desc["n"]["type"] == "int"
     assert desc["k"] == {"type": "choice", "options": [1, 2]}
+
+
+def test_describe_space_flags_a_log_range_as_log():
+    desc = agent_mod._describe_space({"lr": LogRange(1e-5, 1e-1)})
+    # A model shown a bare [1e-5, 1e-1] proposes evenly spaced values and
+    # never tries the small decades — the same mistake uniform sampling makes.
+    assert desc["lr"]["type"] == "float"
+    assert desc["lr"]["scale"] == "log"
+    assert desc["lr"]["range"] == [1e-5, 1e-1]
+
+
+def test_log_range_is_still_a_plain_number_in_the_schema():
+    schema = agent_mod._config_schema({"lr": LogRange(1e-5, 1e-1)})
+    assert schema["properties"]["lr"] == {"type": "number"}
+
+
+def test_history_row_carries_the_error_of_a_failed_run():
+    failed = Run(
+        run_id="0000",
+        task="t:T",
+        objective="score",
+        direction="max",
+        config={"x": 1.0},
+        seed=0,
+        metrics={},
+        env={},
+        created_at="2026-01-01T00:00:00+00:00",
+        error="RuntimeError: CUDA out of memory",
+    )
+    row = agent_mod._history_row(failed)
+    # Sent as bare empty metrics, the model could not tell "bad config" from
+    # "crashed the trainer", and kept proposing into the region that crashes.
+    assert row["failed"] is True
+    assert "CUDA out of memory" in row["error"]
+
+
+def test_history_row_of_a_good_run_is_unchanged():
+    ok = Run(
+        run_id="0001",
+        task="t:T",
+        objective="score",
+        direction="max",
+        config={"x": 1.0},
+        seed=0,
+        metrics={"score": 0.5},
+        env={},
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    assert agent_mod._history_row(ok) == {
+        "config": {"x": 1.0},
+        "metrics": {"score": 0.5},
+    }
+
+
+def test_long_errors_are_truncated_in_the_history():
+    noisy = Run(
+        run_id="0002",
+        task="t:T",
+        objective="score",
+        direction="max",
+        config={},
+        seed=0,
+        metrics={},
+        env={},
+        created_at="2026-01-01T00:00:00+00:00",
+        error="Traceback " + "x" * 5000,
+    )
+    # One stack trace must not crowd the rest of the history out of the prompt.
+    assert len(agent_mod._history_row(noisy)["error"]) == agent_mod._ERROR_EXCERPT
 
 
 def test_config_schema_pins_types_and_requires_every_param():

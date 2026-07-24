@@ -17,6 +17,7 @@ from .guard import (
 )
 from .lab import Lab
 from .replay import ReplayResult, replay
+from .space import LogRange, SpaceError
 from .store import Run, RunStore
 from .task import Task
 
@@ -34,6 +35,8 @@ __all__ = [
     "Result",
     "Run",
     "RunStore",
+    "LogRange",
+    "SpaceError",
     "CircuitBreaker",
     "BreakerTripped",
     "TokenUsage",
