@@ -14,20 +14,25 @@ non-finite value anywhere else is a programming error — configs come from
 write rather than producing an unparseable file.
 
 Alongside the runs, :meth:`RunStore.write_note` records facts about the search
-as a whole rather than one experiment, such as why a circuit breaker stopped
-it. Notes are excluded from iteration, ``len()``, and run-id assignment.
+as a whole rather than one experiment, such as why it stopped. Notes are
+excluded from iteration, ``len()``, and run-id assignment.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 DEFAULT_STORE_DIR = ".autolab/runs"
+
+#: Note recording the outcome of the most recent search over this store.
+#: Written by :meth:`autolab.lab.Lab.run` and read by ``autolab status``.
+SEARCH_NOTE = "search"
 
 # Run files are named by a zero-padded index (``0000.json``). Matching that
 # shape rather than ``*.json`` keeps sidecar notes out of the run listing —
@@ -41,7 +46,12 @@ _NON_FINITE_NAMES = ("NaN", "Infinity", "-Infinity")
 
 
 def _encode_metric(value: Any) -> Any:
-    """Render one metric as something standard JSON can represent."""
+    """Render one metric as something standard JSON can represent.
+
+    Only non-finite values are substituted. A finite value is returned
+    untouched rather than as ``float(value)``, so an integer metric stays an
+    integer on disk instead of silently widening to a float on write.
+    """
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -52,7 +62,7 @@ def _encode_metric(value: Any) -> Any:
         return "Infinity"
     if number == -math.inf:
         return "-Infinity"
-    return number
+    return value
 
 
 def _decode_metric(value: Any) -> Any:
@@ -132,7 +142,20 @@ class RunStore:
     # -- writing -----------------------------------------------------------
 
     def _next_index(self) -> int:
-        return sum(1 for _ in self.directory.glob(_RUN_GLOB))
+        """One past the highest run id on disk.
+
+        Counting files is not the same thing: delete one run from a five-run
+        store and the count points back at a record that is still there, which
+        the next write would overwrite. Records are immutable, so the id
+        allocator has to be monotonic rather than merely plausible.
+        """
+        highest = -1
+        for path in self.directory.glob(_RUN_GLOB):
+            try:
+                highest = max(highest, int(path.stem))
+            except ValueError:  # a file with the right shape but not an id
+                continue
+        return highest + 1
 
     def add(
         self,
@@ -148,7 +171,13 @@ class RunStore:
         extra: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> Run:
-        """Create, persist, and return a new run record."""
+        """Create, persist, and return a new run record.
+
+        *metrics* may contain NaN or inf — a diverged experiment is a real
+        outcome and is encoded as a string. Everything else, *extra* included,
+        must be finite and JSON-serializable; a non-finite value there raises
+        rather than producing a file no other parser can read.
+        """
         run_id = f"{self._next_index():04d}"
         run = Run(
             run_id=run_id,
@@ -165,16 +194,30 @@ class RunStore:
             error=error,
         )
         # allow_nan=False turns a non-finite value that escaped encoding into a
-        # loud failure instead of an unparseable file on disk.
-        self._path(run_id).write_text(
-            json.dumps(run.to_dict(), indent=2, sort_keys=True, allow_nan=False),
-            encoding="utf-8",
-        )
+        # loud failure instead of an unparseable file on disk. Serialize before
+        # opening, so a rejected record leaves no truncated file behind.
+        payload = json.dumps(run.to_dict(), indent=2, sort_keys=True, allow_nan=False)
+        try:
+            # Exclusive create: records are immutable, so an id that already
+            # exists means either a bug in the allocator or a second process
+            # writing to this store. Either way, overwriting the run that is
+            # already there is the one outcome that must not happen quietly.
+            with self._path(run_id).open("x", encoding="utf-8") as handle:
+                handle.write(payload)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"run {run_id!r} already exists in {self.directory}; the store "
+                f"is append-only and supports a single writer at a time"
+            ) from exc
         return run
 
     # -- notes -------------------------------------------------------------
 
     def _note_path(self, name: str) -> Path:
+        # The name lands in a filesystem path, so keep it to a bare identifier
+        # rather than letting a caller escape the store directory.
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise ValueError(f"note name must match [A-Za-z0-9_-]+, got {name!r}")
         return self.directory / f"{name}.note.json"
 
     def write_note(self, name: str, payload: dict[str, Any]) -> Path:

@@ -42,7 +42,12 @@ def best(runs: list[Run], objective: str, direction: str) -> Run | None:
 class Summary:
     objective: str
     direction: str
+    #: Every run in the store, failures and diverged runs included.
     n_runs: int
+    #: Runs that reported a finite objective — the ones the statistics below
+    #: are computed from. Reporting only this count made a store of nothing
+    #: but crashes read as "runs: 0".
+    n_scored: int
     best_score: float | None
     best_run_id: str | None
     best_config: dict[str, Any] | None
@@ -57,7 +62,9 @@ def summarize(runs: list[Run], objective: str, direction: str) -> Summary:
     """Compute a :class:`Summary` of a search over *objective*."""
     rs = scored(runs, objective)
     if not rs:
-        return Summary(objective, direction, 0, None, None, None, None, None, [])
+        return Summary(
+            objective, direction, len(runs), 0, None, None, None, None, None, []
+        )
 
     chronological = sorted(rs, key=lambda r: (r.created_at, r.run_id))
     scores = [float(r.metrics[objective]) for r in chronological]
@@ -74,7 +81,8 @@ def summarize(runs: list[Run], objective: str, direction: str) -> Summary:
     return Summary(
         objective=objective,
         direction=direction,
-        n_runs=len(rs),
+        n_runs=len(runs),
+        n_scored=len(rs),
         best_score=top.score,
         best_run_id=top.run_id,
         best_config=top.config,
@@ -84,8 +92,34 @@ def summarize(runs: list[Run], objective: str, direction: str) -> Summary:
     )
 
 
-def search_tree(runs: list[Run]) -> str:
-    """Render the parent→child derivation of runs as an indented tree."""
+#: Indentation levels shown before the tree starts marking depth numerically.
+MAX_TREE_INDENT = 12
+
+
+def _tree_line(run: Run, depth: int, max_indent: int) -> str:
+    metric = (
+        f"{run.objective}={run.metrics[run.objective]:.4g}"
+        if is_scored(run, run.objective)
+        else "(no objective)"
+    )
+    if depth <= max_indent:
+        return f"{'  ' * depth}{run.run_id}  {metric}"
+    return f"{'  ' * max_indent}+{depth}  {run.run_id}  {metric}"
+
+
+def search_tree(runs: list[Run], max_indent: int = MAX_TREE_INDENT) -> str:
+    """Render the parent→child derivation of runs as an indented tree.
+
+    Walked with an explicit stack rather than recursively. Every proposal's
+    parent is the best run so far, so a search that keeps improving derives
+    each run from the one before it — a single chain as deep as the search is
+    long. Recursion hit Python's stack limit there at around a thousand runs,
+    which meant ``report()`` failed on exactly the searches that went well.
+
+    Indentation stops at *max_indent* levels; deeper runs are prefixed with
+    their true depth instead, so that same long chain stays inside the
+    terminal rather than marching off the right edge.
+    """
     by_id = {r.run_id: r for r in runs}
     children: dict[str | None, list[Run]] = {}
     for r in sorted(runs, key=lambda r: r.run_id):
@@ -93,16 +127,11 @@ def search_tree(runs: list[Run]) -> str:
         children.setdefault(parent, []).append(r)
 
     lines: list[str] = []
-
-    def walk(parent_id: str | None, depth: int) -> None:
-        for run in children.get(parent_id, []):
-            metric = (
-                f"{run.objective}={run.metrics[run.objective]:.4g}"
-                if is_scored(run, run.objective)
-                else "(no objective)"
-            )
-            lines.append(f"{'  ' * depth}{run.run_id}  {metric}")
-            walk(run.run_id, depth + 1)
-
-    walk(None, 0)
+    # Reversed on push so siblings pop in store order — same output as the
+    # recursive walk this replaces.
+    stack: list[tuple[Run, int]] = [(r, 0) for r in reversed(children.get(None, []))]
+    while stack:
+        run, depth = stack.pop()
+        lines.append(_tree_line(run, depth, max_indent))
+        stack.extend((kid, depth + 1) for kid in reversed(children.get(run.run_id, [])))
     return "\n".join(lines)

@@ -66,7 +66,15 @@ def _rate_for(
         return pricing[model]
     if not pricing:
         return (0.0, 0.0)
-    return max(pricing.values())
+    # Componentwise max, not max() over the tuples: tuple comparison ranks by
+    # input rate and only consults the output rate to break ties, so a table
+    # containing a cheap-in/expensive-out model would price an unknown one
+    # below a model already in the table. The table is public and mutable, so
+    # that shape is a caller's edit away.
+    return (
+        max(rate_in for rate_in, _ in pricing.values()),
+        max(rate_out for _, rate_out in pricing.values()),
+    )
 
 
 @dataclass
@@ -139,6 +147,11 @@ class CircuitBreaker:
 
     Every limit may be set to ``None`` to disable that check individually.
 
+    Limits are evaluated at experiment boundaries, never mid-experiment: a
+    running job cannot be preempted. So a search overshoots ``max_seconds`` by
+    at most the duration of one experiment, and ``max_cost_usd`` by at most one
+    round's worth of agent calls. Size the caps accordingly.
+
     :param max_consecutive_errors: trip after this many failed experiments in
         a row (a crashing task, a bad environment).
     :param max_consecutive_nonfinite: trip after this many consecutive runs
@@ -178,6 +191,11 @@ class CircuitBreaker:
 
     # -- lifecycle ---------------------------------------------------------
 
+    @property
+    def runs_observed(self) -> int:
+        """Experiments seen since :meth:`start`."""
+        return self._runs_observed
+
     def start(self) -> None:
         """Reset counters and start the clock. Called once per search."""
         self._consecutive_errors = 0
@@ -185,16 +203,20 @@ class CircuitBreaker:
         self._runs_observed = 0
         self._started_at = time.monotonic()
 
+    def _check_clock(self) -> None:
+        if self.max_seconds is None or self._started_at is None:
+            return
+        elapsed = time.monotonic() - self._started_at
+        if elapsed > self.max_seconds:
+            self._trip(f"wall-clock limit of {self.max_seconds:g}s exceeded")
+
     def before_batch(self, agent: Any) -> None:
         """Check the limits that do not depend on an experiment's result.
 
         Runs before each round of proposals, so a search that is only burning
         API credit stops before it spends another round's worth.
         """
-        if self.max_seconds is not None and self._started_at is not None:
-            elapsed = time.monotonic() - self._started_at
-            if elapsed > self.max_seconds:
-                self._trip(f"wall-clock limit of {self.max_seconds:g}s exceeded")
+        self._check_clock()
 
         if self.max_agent_failures is not None:
             failures = getattr(agent, "consecutive_failures", 0)
@@ -218,8 +240,14 @@ class CircuitBreaker:
                     )
 
     def observe(self, run: Any, objective: str) -> None:
-        """Record one finished experiment and check the result-based limits."""
+        """Record one finished experiment and check the result-based limits.
+
+        The clock is re-checked here as well as in :meth:`before_batch`, so a
+        single long experiment stops the search when it finishes rather than
+        after the whole next round has been proposed and run.
+        """
         self._runs_observed += 1
+        self._check_clock()
 
         if getattr(run, "failed", False):
             self._consecutive_errors += 1

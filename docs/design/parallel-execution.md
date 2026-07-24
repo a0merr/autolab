@@ -100,9 +100,12 @@ honestly (budget count + audit stay truthful) instead of silently dropped.
 ## Hazards
 
 1. **Store id race** — two concurrent writers pick the same `_next_index()` and
-   collide. *Solved* by keeping all writes in the single-threaded parent. (If
-   workers must ever write directly — large artifacts — switch `run_id` to
-   collision-free uuid and make `add` atomic with `open(path, "x")` + retry.)
+   collide. *Solved* by keeping all writes in the single-threaded parent.
+   `add` now writes with `open(path, "x")` regardless, so a collision from
+   *outside* that assumption — a second process on the same store directory —
+   raises instead of overwriting the record already there. (If workers must
+   ever write directly, add a retry loop around it, or switch `run_id` to a
+   collision-free uuid.)
 2. **Seeding location** — `seed_everything` in the parent is useless across
    processes. It must run *inside the worker* before `task.run`.
 3. **Pickling** — pass `task_name` + config + seed, reconstruct via import.
@@ -121,6 +124,20 @@ honestly (budget count + audit stay truthful) instead of silently dropped.
    store an `error` record, continue.
 9. **`parent` semantics** — all `K` in a round share the round-start best as
    parent; the search tree branches `K`-wide per round. Intended; document it.
+10. **Pool per batch** — the first implementation built a `ProcessPoolExecutor`
+    inside `run_batch`, so every round paid a fresh interpreter per worker:
+    ~1.7s measured per batch on a task that runs in microseconds, which a
+    100-run search at `concurrency=2` pays fifty times. *Solved* by holding the
+    pool for the executor's lifetime (`close()`, context manager, `__del__`).
+11. **A job that never finishes** — no breaker can help, because breakers are
+    only checked between experiments, and `max_seconds` cannot preempt a
+    running job. *Solved* by `ProcessExecutor(timeout=…)`: past the batch
+    deadline the workers are killed, unfinished jobs are recorded as failed
+    runs, and the next batch gets a fresh pool. A job that had already finished
+    when the deadline fired keeps its real result — the same rule as everywhere
+    else here, that work already paid for is not thrown away. Killing needs the
+    pool's private `_processes`, since `shutdown` has no public way to stop a
+    running child; there is a fallback if a future CPython drops it.
 
 ## Rollout
 

@@ -39,6 +39,27 @@ def test_run_ids_are_unique_and_sequential(store_dir):
     assert len(store) == 5
 
 
+def test_next_id_never_reuses_a_deleted_one(store_dir):
+    store = RunStore(store_dir)
+    for i in range(4):
+        _add(store, float(i))
+    store._path("0001").unlink()
+
+    # Counting files would hand out 0003 here, overwriting a live record.
+    assert _add(store, 9.0).run_id == "0004"
+    assert store.get("0003").metrics["score"] == 3.0
+
+
+def test_overwriting_an_existing_run_is_refused(store_dir):
+    store = RunStore(store_dir)
+    _add(store, 1.0)
+    store._next_index = lambda: 0  # a second writer that picked the same id
+
+    with pytest.raises(FileExistsError, match="append-only"):
+        _add(store, 2.0)
+    assert store.get("0000").metrics["score"] == 1.0
+
+
 def test_best_max_and_min(store_dir):
     store = RunStore(store_dir)
     for s in (1.0, 5.0, 3.0):
@@ -81,6 +102,24 @@ def test_non_finite_metrics_are_written_as_valid_json(store_dir, value, name):
 
 def _reject(token):
     raise AssertionError(f"non-standard JSON constant on disk: {token}")
+
+
+def test_finite_metrics_keep_their_type_on_disk(store_dir):
+    store = RunStore(store_dir)
+    run = store.add(
+        task="tasks.quadratic:Quadratic",
+        objective="score",
+        direction="max",
+        config={"x": 1.0},
+        seed=0,
+        metrics={"score": 0.5, "steps": 40},
+        env={},
+    )
+    written = json.loads(store._path(run.run_id).read_text(encoding="utf-8"))
+    # Encoding substitutes only for non-finite values; an int metric must not
+    # widen to a float on the way through.
+    assert written["metrics"]["steps"] == 40
+    assert isinstance(written["metrics"]["steps"], int)
 
 
 def test_non_finite_config_is_rejected_loudly(store_dir):
@@ -139,3 +178,10 @@ def test_notes_round_trip_and_stay_out_of_the_run_listing(store_dir):
 
 def test_missing_note_is_none(store_dir):
     assert RunStore(store_dir).read_note("breaker") is None
+
+
+@pytest.mark.parametrize("name", ["../escaped", "a/b", ""])
+def test_note_names_cannot_escape_the_store_directory(store_dir, name):
+    store = RunStore(store_dir)
+    with pytest.raises(ValueError, match="note name"):
+        store.write_note(name, {"reason": "diverged"})
