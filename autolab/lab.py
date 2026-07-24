@@ -16,8 +16,12 @@ from . import analysis, env, space as space_mod
 from .agent import Agent, RandomAgent
 from .executors import Executor, SerialExecutor
 from .guard import BreakerTripped, CircuitBreaker
-from .store import DEFAULT_STORE_DIR, Run, RunStore
+from .store import DEFAULT_STORE_DIR, SEARCH_NOTE, Run, RunStore
 from .task import Task
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class Lab:
@@ -78,13 +82,19 @@ class Lab:
         regardless of how jobs are scheduled.
 
         Raises :class:`~autolab.guard.BreakerTripped` if a circuit breaker
-        limit fires. Runs recorded before that point stay in the store, and the
-        reason is written to the store as a ``breaker`` note so an unattended
-        run explains itself after the fact.
+        limit fires. Runs recorded before that point stay in the store.
+
+        Every outcome — running, completed, tripped, crashed — is written to
+        the store as a ``search`` note, so an unattended run explains itself
+        after the fact. See :meth:`status`.
         """
         env_snapshot = env.capture()
         task_name = self.task.qualified_name()
         self.breaker.start()
+        started_at = _now_iso()
+        # Written up front, and overwritten on exit. A note left saying
+        # "running" is how a killed process is told apart from a clean one.
+        self._write_status(task_name, started_at, "running")
 
         done = 0
         try:
@@ -105,21 +115,43 @@ class Lab:
 
                 results = self.executor.run_batch(task_name, jobs)
 
-                for (config, seed), result in zip(jobs, results):
-                    run = self._record(
-                        config, seed, result, env_snapshot, parent, task_name
-                    )
+                # Record the whole batch before checking any limit against it.
+                # These experiments have already run and already cost what they
+                # cost; dropping a sibling's record because an earlier result
+                # tripped the breaker would throw away work the search paid for
+                # and leave the store disagreeing with what actually executed.
+                recorded = [
+                    self._record(config, seed, result, env_snapshot, parent, task_name)
+                    for (config, seed), result in zip(jobs, results)
+                ]
+                for run in recorded:
                     self.breaker.observe(run, self.objective)
                 done += k
+
+            best = self.best()
+            if best is None:
+                raise RuntimeError(
+                    "search produced no successful runs (all experiments failed)"
+                )
         except BreakerTripped as exc:
-            self._record_trip(exc, task_name)
+            self._write_status(task_name, started_at, "tripped", reason=exc.reason)
+            raise
+        except Exception as exc:
+            self._write_status(
+                task_name,
+                started_at,
+                "crashed",
+                reason=f"{type(exc).__name__}: {exc}",
+            )
             raise
 
-        best = self.best()
-        if best is None:
-            raise RuntimeError(
-                "search produced no successful runs (all experiments failed)"
-            )
+        self._write_status(
+            task_name,
+            started_at,
+            "completed",
+            best_run_id=best.run_id,
+            best_score=best.score,
+        )
         return best
 
     def _record(self, config, seed, result, env_snapshot, parent, task_name) -> Run:
@@ -143,21 +175,29 @@ class Lab:
             error=result.error,
         )
 
-    def _record_trip(self, exc: BreakerTripped, task_name: str) -> None:
-        """Leave a durable record of why the search stopped.
+    def _write_status(
+        self, task_name: str, started_at: str, status: str, **extra: Any
+    ) -> None:
+        """Leave a durable record of how the search is going, or how it ended.
 
         A cron-driven run that trips at 3am has nowhere to raise to, so the
-        reason has to survive the process.
+        reason has to survive the process. Written on every exit path and not
+        only on a trip: a note that only appears when something breaks is
+        indistinguishable, the next morning, from a note left over from
+        yesterday's search in the same store.
         """
         note: dict[str, Any] = {
-            "reason": exc.reason,
-            "runs_observed": exc.runs_observed,
+            "status": status,
+            "reason": None,
+            "runs_observed": self.breaker.runs_observed,
             "task": task_name,
             "objective": self.objective,
             "direction": self.direction,
             "budget": self.budget,
-            "stopped_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": started_at,
+            "stopped_at": None if status == "running" else _now_iso(),
         }
+        note.update(extra)
         usage = getattr(self.agent, "usage", None)
         model = getattr(self.agent, "model", None)
         if usage is not None and model is not None:
@@ -166,9 +206,13 @@ class Lab:
                 "calls": usage.calls,
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
-                "estimated_cost_usd": round(usage.cost_usd(model), 6),
+                # Priced with the breaker's own table, so the recorded spend
+                # and the cap that fired on it can never disagree.
+                "estimated_cost_usd": round(
+                    usage.cost_usd(model, self.breaker.pricing), 6
+                ),
             }
-        self.store.write_note("breaker", note)
+        self.store.write_note(SEARCH_NOTE, note)
 
     def _parent_for(self, history: list[Run]) -> str | None:
         """The run a new proposal is derived from: the best so far."""
@@ -179,6 +223,15 @@ class Lab:
 
     def best(self) -> Run | None:
         return self.store.best(self.objective, self.direction)
+
+    def status(self) -> dict[str, Any] | None:
+        """How the most recent search over this store ended, or ``None``.
+
+        ``status`` is one of ``running``, ``completed``, ``tripped``, or
+        ``crashed``; ``reason`` explains the last two. Also available from the
+        shell as ``autolab status``.
+        """
+        return self.store.read_note(SEARCH_NOTE)
 
     def summary(self) -> analysis.Summary:
         return analysis.summarize(self.store.list(), self.objective, self.direction)

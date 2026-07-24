@@ -100,9 +100,12 @@ honestly (budget count + audit stay truthful) instead of silently dropped.
 ## Hazards
 
 1. **Store id race** — two concurrent writers pick the same `_next_index()` and
-   collide. *Solved* by keeping all writes in the single-threaded parent. (If
-   workers must ever write directly — large artifacts — switch `run_id` to
-   collision-free uuid and make `add` atomic with `open(path, "x")` + retry.)
+   collide. *Solved* by keeping all writes in the single-threaded parent.
+   `add` now writes with `open(path, "x")` regardless, so a collision from
+   *outside* that assumption — a second process on the same store directory —
+   raises instead of overwriting the record already there. (If workers must
+   ever write directly, add a retry loop around it, or switch `run_id` to a
+   collision-free uuid.)
 2. **Seeding location** — `seed_everything` in the parent is useless across
    processes. It must run *inside the worker* before `task.run`.
 3. **Pickling** — pass `task_name` + config + seed, reconstruct via import.

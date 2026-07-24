@@ -115,14 +115,25 @@ lab.run()   # raises BreakerTripped when a limit fires
 
 Tripping is a stop, not a rollback: everything already recorded stays in the store, and `BreakerTripped` names the limit that fired. Pass `CircuitBreaker.off()` to disable.
 
-A cron-driven run has nowhere to raise to, so the reason is also written to the store and survives the process:
+A cron-driven run has nowhere to raise to, so how the search ended is written to the store and survives the process:
 
 ```python
-lab.store.read_note("breaker")
-# {'reason': '3 experiment(s) failed in a row; last error: RuntimeError: boom',
-#  'runs_observed': 3, 'budget': 200, 'stopped_at': '2026-07-24T03:11:02+00:00',
+lab.status()
+# {'status': 'tripped', 'runs_observed': 3, 'budget': 200,
+#  'reason': '3 experiment(s) failed in a row; last error: RuntimeError: boom',
+#  'started_at': '2026-07-24T02:58:11+00:00', 'stopped_at': '2026-07-24T03:11:02+00:00',
 #  'agent': {'model': 'claude-opus-5', 'calls': 2, 'estimated_cost_usd': 0.0413}}
 ```
+
+`status` is one of `running`, `completed`, `tripped`, or `crashed`, and it is written on every exit path — including a clean finish. A note that only appeared on failure would be indistinguishable, the next morning, from one left over from yesterday's search in the same store. A note still reading `running` means the process died without getting to write anything else.
+
+From the shell, `autolab status` prints the same record and exits non-zero unless the search completed cleanly, so a cron wrapper can tell an overnight run that finished from one that stopped without parsing anything:
+
+```sh
+autolab status || notify-me "search stopped early"
+```
+
+`autolab report` prints a one-line banner ahead of the summary when the last search didn't finish — a truncated search otherwise reads as a small but complete one.
 
 Spend estimates use a cached list-price table. Override it for negotiated rates or a model this version predates:
 
@@ -243,6 +254,8 @@ Each run is persisted as a versioned record containing:
 autolab runs list                 # every experiment, newest first
 autolab runs show <run_id>        # full config + metrics for one run
 autolab replay <run_id>           # re-execute it exactly
+autolab report                    # summary of the search
+autolab status                    # how the last search ended (exit 1 if not cleanly)
 ```
  
 ---

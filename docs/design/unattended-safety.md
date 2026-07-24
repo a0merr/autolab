@@ -71,11 +71,22 @@ as it can:
 - `before_batch(agent)` — clock, cost, and agent-health limits, checked
   *before* spending another round's worth of API calls.
 - `observe(run, objective)` — error and divergence limits, checked per run.
+  The clock is re-checked here too, so one long experiment stops the search
+  when it lands rather than a whole round later.
+
+Nothing is checked mid-experiment, because a running job cannot be preempted.
+So `max_seconds` overshoots by at most one experiment and `max_cost_usd` by at
+most one round's worth of agent calls. Both bounds are documented on the class
+rather than left to be discovered from a bill.
 
 Tripping raises `BreakerTripped` (a `RuntimeError`, so existing handlers still
 catch it) carrying the reason and the run count. It is a **stop, not a
 rollback** — the store is append-only and everything written before the trip
-stays readable via `autolab runs list`.
+stays readable via `autolab runs list`. A batch is recorded in full before any
+of its results are shown to the breaker: those experiments have already run and
+already cost what they cost, so discarding a sibling's record because an
+earlier result tripped would throw away paid-for work and leave the store
+disagreeing with what actually executed.
 
 Cost is estimated from a cached per-MTok price table plus cache-read/write
 multipliers. An unrecognized model is priced at the highest known rate, so an
@@ -84,13 +95,12 @@ and negotiated rates differ, so `PRICING_USD_PER_MTOK` is public and mutable,
 and both `TokenUsage.cost_usd` and `CircuitBreaker` accept a `pricing`
 override — a stale table must not be the reason a cap silently stops working.
 
-A trip is also **written to the store** as a `breaker` note (reason, run
-count, wall-clock stamp, and agent spend). A `BreakerTripped` raised at 3am in
-a cron job has nowhere to go; the note is what remains in the morning. Notes
-live beside the runs but are matched by a distinct filename shape, so they are
-excluded from iteration, `len()`, and run-id assignment. (That last one was a
-latent bug: `_next_index` counted `*.json`, so *any* stray file in the store
-directory would have shifted the next run id.)
+"Highest known rate" is a componentwise max over the table, not `max()` over
+its `(input, output)` tuples. Tuple comparison ranks by input rate and only
+consults output to break ties, so a table holding a cheap-in/expensive-out
+model would have priced an *unknown* model below one already listed — the
+opposite of erring high. Making the table public is what put that shape one
+caller's edit away.
 
 The breaker is duck-typed against the agent (`usage`, `model`,
 `consecutive_failures`, `last_error`), so `RandomAgent` — which has none of
@@ -108,6 +118,50 @@ plausible-looking store. Two mitigations:
 - Configuration errors (400/401/403/404 — bad key, unknown model, rejected
   schema) are **re-raised**, not swallowed. They recur on every call, so
   falling back is never the right answer.
+
+## Layer 5: say what happened, after the process is gone
+
+A `BreakerTripped` raised at 3am in a cron job has nowhere to go. So the
+outcome is **written to the store** as a `search` note: status, reason, run
+count, start and stop stamps, and agent spend.
+
+The note is written on *every* exit path, not only on a trip:
+
+| status | meaning |
+|---|---|
+| `running` | written before the first experiment; still there ⇒ the process died |
+| `completed` | budget spent, best run recorded |
+| `tripped` | a breaker limit fired; `reason` names it |
+| `crashed` | an exception escaped the loop, including "no successful runs" |
+
+Writing it only on failure would have fixed "no record" while leaving "wrong
+record": a search that trips on Monday and a clean one on Tuesday share a store
+directory, and Tuesday morning cannot tell a stale reason from a current one.
+Always overwriting makes the note describe exactly one search — the last.
+
+Spend in the note is priced with the breaker's *own* pricing table, so the
+recorded cost and the cap that fired on it can never disagree.
+
+`autolab status` prints the note and exits non-zero unless the search
+completed, which is enough for a cron wrapper to alert on without parsing
+anything. `autolab report` prints a banner ahead of the summary for the same
+reason: a truncated search otherwise reads as a small but complete one.
+
+Notes live beside the runs but are matched by a distinct filename shape, so
+they are excluded from iteration, `len()`, and run-id assignment. (That last
+one was a latent bug: `_next_index` counted `*.json`, so *any* stray file in
+the store directory would have shifted the next run id.)
+
+## Related fixes: the id allocator
+
+Fixing the glob stopped stray files shifting the next run id, but counting was
+still the wrong operation. Delete one run from a five-run store and the count
+points back at a record that is still there — which the next `add()` would have
+silently overwritten, in a store whose whole contract is immutability. The
+allocator is now `max(id) + 1`, and writes use exclusive create (`open("x")`),
+so an id that somehow already exists raises instead of clobbering. That also
+turns two processes sharing a store directory from silent data loss into an
+error naming the collision.
 
 ## Related fixes: NaN in the store
 
@@ -131,7 +185,14 @@ record. A generic encoder would have to decode generically too, and a
 categorical whose legitimate value is the string `"NaN"` would silently become
 a float. Everywhere else, `allow_nan=False` raises instead: a non-finite
 config cannot arise from `coerce`, so one indicates a bug worth surfacing
-rather than round-tripping.
+rather than round-tripping. That strictness also covers `extra`, which *is*
+caller-supplied — documented on `add()` rather than quietly encoded, since the
+same decode ambiguity would apply there.
+
+The encoder substitutes only for non-finite values and returns everything else
+untouched. Returning `float(value)` unconditionally — as it first did — would
+have widened an integer metric to a float on the way to disk, changing a
+recorded value in the one place whose job is to record values exactly.
 
 ## Deliberately not done
 
