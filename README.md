@@ -7,10 +7,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-<!-- Record the demo (see docs/RECORDING.md), save as docs/demo.gif, then
-     uncomment the line below to put it above the fold:
-![autolab demo](docs/demo.gif)
--->
+![autolab demo: an agent search, the report with its derivation tree, and the best run replaying exactly](docs/demo.gif)
+
+<!-- Re-record with docs/RECORDING.md when the demo's output changes. -->
+
 
 > **Status: working, early.** The core loop, versioned run store, replay, CLI, analysis, and both agent backends are implemented and tested (see the [roadmap](#roadmap) for what's done vs. planned). autolab grew out of an earlier project that auto-tuned a small GPT; this is the generalization of that idea into a model- and task-agnostic framework.
 
