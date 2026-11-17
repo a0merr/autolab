@@ -23,14 +23,21 @@ def scored(runs: list[Run], objective: str) -> list[Run]:
     return [r for r in runs if is_scored(r, objective)]
 
 
+def rank_key(run: Run, objective: str, direction: str) -> tuple:
+    """Sort key that puts the best run first: by objective, then oldest first.
+
+    The tie-break makes the order independent of the order runs arrive in.
+    Without it, the report (fed newest-first) and ``RunStore.best`` (fed in
+    directory order) named different runs as "best" whenever scores tied.
+    """
+    sign = -1.0 if direction == "max" else 1.0
+    return (sign * float(run.metrics[objective]), run.created_at, run.run_id)
+
+
 def rank(runs: list[Run], objective: str, direction: str) -> list[Run]:
-    """Runs sorted best objective first."""
+    """Runs sorted best objective first; ties go to the run that got there first."""
     rs = scored(runs, objective)
-    return sorted(
-        rs,
-        key=lambda r: float(r.metrics[objective]),
-        reverse=(direction == "max"),
-    )
+    return sorted(rs, key=lambda r: rank_key(r, objective, direction))
 
 
 def best(runs: list[Run], objective: str, direction: str) -> Run | None:
