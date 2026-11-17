@@ -265,9 +265,12 @@ class RunStore:
         return sum(1 for _ in self.directory.glob(_RUN_GLOB))
 
     def best(self, objective: str, direction: str) -> Run | None:
-        """The run with the best objective value, or ``None`` if empty."""
-        candidates = [r for r in self if is_scored(r, objective)]
-        if not candidates:
-            return None
-        pick = max if direction == "max" else min
-        return pick(candidates, key=lambda r: float(r.metrics[objective]))
+        """The run with the best objective value, or ``None`` if empty.
+
+        Ties go to the run that reached the score first - the same rule the
+        report uses, so the two always name the same run. (Picking with
+        ``max()`` over the directory listing broke ties by file-system order.)
+        """
+        from .analysis import best  # analysis imports this module
+
+        return best(list(self), objective, direction)

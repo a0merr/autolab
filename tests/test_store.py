@@ -72,6 +72,24 @@ def test_best_empty_is_none(store_dir):
     assert RunStore(store_dir).best("score", "max") is None
 
 
+@pytest.mark.parametrize("direction", ["max", "min"])
+def test_best_ties_go_to_the_earliest_run_everywhere(store_dir, direction):
+    from autolab import analysis
+
+    store = RunStore(store_dir)
+    for s in (2.0, 7.0, 4.0, 7.0, 2.0, 7.0):
+        _add(store, s)
+    want = "0001" if direction == "max" else "0000"
+
+    # The store, the report (fed newest-first) and the lab's history (fed
+    # oldest-first) must all name the same run, whatever order they read in.
+    assert store.best("score", direction).run_id == want
+    for newest_first in (True, False):
+        runs = store.list(newest_first=newest_first)
+        assert analysis.best(runs, "score", direction).run_id == want
+        assert analysis.summarize(runs, "score", direction).best_run_id == want
+
+
 def test_list_newest_first(store_dir):
     store = RunStore(store_dir)
     for s in range(3):
